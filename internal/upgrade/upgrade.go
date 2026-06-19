@@ -56,6 +56,13 @@ func RunUpgrade(ctx context.Context, client *http.Client) error {
 		return err
 	}
 
+	current := strings.TrimPrefix(version.Version, "v")
+	tag := strings.TrimPrefix(latest.TagName, "v")
+	if tag == current {
+		fmt.Printf("mihoro: Already up to date (%s)\n", version.Version)
+		return nil
+	}
+
 	target := buildTarget()
 	assetURL := findAsset(latest.Assets, target)
 	if assetURL == "" {
