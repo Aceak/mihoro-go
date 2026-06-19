@@ -7,11 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"mihoro-go/internal/bin"
-	"mihoro-go/internal/config"
 	"mihoro-go/internal/systemctl"
-	"mihoro-go/internal/ui"
 	"mihoro-go/internal/utils"
 )
 
@@ -49,10 +48,11 @@ func normalizeVersionToken(token string) string {
 	return ""
 }
 
-func (m *Mihoro) UpdateCore(ctx context.Context, client *http.Client, archOverride string) (StageStatus, error) {
+func (m *Mihoro) UpdateCore(ctx context.Context, client *http.Client, archOverride, mirror string) (StageStatus, error) {
 	if _, err := os.Stat(m.BinaryPath); os.IsNotExist(err) {
 		return StageFailed, fmt.Errorf("mihomo binary not found at %s — run `mihoro init` first", m.BinaryPath)
 	}
+
 
 	resolved, err := bin.ResolveBinary(ctx, client, m.Config, archOverride)
 	if err != nil {
@@ -77,15 +77,17 @@ func (m *Mihoro) UpdateCore(ctx context.Context, client *http.Client, archOverri
 	_ = tmpFile.Close()
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	if err := utils.DownloadFile(ctx, client, resolved.URL, tmpPath, m.Config.MihoroUserAgent, ""); err != nil {
+	if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+		URL:      resolved.URL,
+		DestPath: tmpPath,
+		Retries:  utils.MaxRetries,
+	}); err != nil {
 		return StageFailed, fmt.Errorf("download core: %w", err)
 	}
 
-	fmt.Println("   Stopping mihomo.service before overwriting...")
-	sctl := systemctl.New(m.SystemdScope)
-	_ = sctl.Stop("mihomo.service")
+	_ = systemctl.Stop(systemctl.MihomoService)
 
-	if err := utils.ExtractGzip(tmpPath, m.BinaryPath, "   "); err != nil {
+	if err := utils.ExtractGzip(tmpPath, m.BinaryPath, "  "); err != nil {
 		return StageFailed, fmt.Errorf("extract core: %w", err)
 	}
 
@@ -96,24 +98,8 @@ func (m *Mihoro) UpdateCore(ctx context.Context, client *http.Client, archOverri
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) UpdateConfig(ctx context.Context, client *http.Client) (StageStatus, error) {
-	if err := utils.DownloadFile(ctx, client, m.Config.RemoteConfigURL, m.ConfigPath, m.Config.MihoroUserAgent, ""); err != nil {
-		return StageFailed, fmt.Errorf("download config: %w", err)
-	}
+func (m *Mihoro) UpdateGeodata(ctx context.Context, client *http.Client, mirror string) (StageStatus, error) {
 
-	if err := utils.TryDecodeBase64InPlace(m.ConfigPath); err != nil {
-		return StageFailed, fmt.Errorf("decode config: %w", err)
-	}
-
-	if _, err := config.ApplyOverride(m.ConfigPath, &m.Config.MihomoConfig); err != nil {
-		return StageFailed, fmt.Errorf("apply override: %w", err)
-	}
-
-	fmt.Println("   Updated and applied config overrides")
-	return StageInstalled, nil
-}
-
-func (m *Mihoro) UpdateGeodata(ctx context.Context, client *http.Client) (StageStatus, error) {
 	geox := m.Config.MihomoConfig.GeoxUrl
 	if geox == nil {
 		return StageSkipped, nil
@@ -125,23 +111,38 @@ func (m *Mihoro) UpdateGeodata(ctx context.Context, client *http.Client) (StageS
 	}
 
 	if geodataMode {
-		if err := utils.DownloadFile(ctx, client, geox.Geoip, m.ConfigRoot+"/geoip.dat", m.Config.MihoroUserAgent, ""); err != nil {
+		if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+			URL:      geox.Geoip,
+			DestPath: m.ConfigRoot + "/geoip.dat",
+			Retries:  utils.MaxRetries,
+			Timeout:   30 * time.Second,
+		}); err != nil {
 			return StageFailed, fmt.Errorf("download geoip.dat: %w", err)
 		}
-		if err := utils.DownloadFile(ctx, client, geox.Geosite, m.ConfigRoot+"/geosite.dat", m.Config.MihoroUserAgent, ""); err != nil {
+		if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+			URL:      geox.Geosite,
+			DestPath: m.ConfigRoot + "/geosite.dat",
+			Retries:  utils.MaxRetries,
+			Timeout:   30 * time.Second,
+		}); err != nil {
 			return StageFailed, fmt.Errorf("download geosite.dat: %w", err)
 		}
 	} else {
-		if err := utils.DownloadFile(ctx, client, geox.Mmdb, m.ConfigRoot+"/country.mmdb", m.Config.MihoroUserAgent, ""); err != nil {
+		if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+			URL:      geox.Mmdb,
+			DestPath: m.ConfigRoot + "/country.mmdb",
+			Retries:  utils.MaxRetries,
+			Timeout:   30 * time.Second,
+		}); err != nil {
 			return StageFailed, fmt.Errorf("download country.mmdb: %w", err)
 		}
 	}
 
-	fmt.Println("   Downloaded and updated geodata")
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) UpdateUI(ctx context.Context, client *http.Client) (StageStatus, error) {
+func (m *Mihoro) UpdateUI(ctx context.Context, client *http.Client, mirror string) (StageStatus, error) {
+
 	uiCfg := m.Config.UI
 	if uiCfg == nil {
 		return StageSkipped, nil
@@ -154,7 +155,7 @@ func (m *Mihoro) UpdateUI(ctx context.Context, client *http.Client) (StageStatus
 
 	targetDir := resolveExternalUIPath(m.ConfigRoot, *externalUI)
 
-	if err := ui.InstallUI(ctx, client, *uiCfg, targetDir, m.Config.MihoroUserAgent, "   "); err != nil {
+	if err := installUI(ctx, client, *uiCfg, targetDir); err != nil {
 		return StageFailed, fmt.Errorf("install ui: %w", err)
 	}
 
@@ -162,6 +163,5 @@ func (m *Mihoro) UpdateUI(ctx context.Context, client *http.Client) (StageStatus
 }
 
 func (m *Mihoro) RestartService() error {
-	sctl := systemctl.New(m.SystemdScope)
-	return sctl.Restart("mihomo.service")
+	return systemctl.Restart(systemctl.MihomoService)
 }

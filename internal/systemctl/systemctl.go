@@ -5,92 +5,40 @@ import (
 	"os/exec"
 )
 
-// SystemdScope — user or system-level systemd.
-type SystemdScope int
+// --- service operations ---
+
+func Start(service string) error    { return run("start", service) }
+func Stop(service string) error     { return run("stop", service) }
+func Restart(service string) error  { return run("restart", service) }
+func Enable(service string) error   { return run("enable", service) }
+func Disable(service string) error  { return run("disable", service) }
+func DaemonReload() error           { return run("daemon-reload") }
+func ResetFailed() error            { return run("reset-failed") }
+
+func IsActive(service string) bool  { return isCmd("is-active", "--quiet", service) }
+func IsEnabled(service string) bool { return isCmd("is-enabled", "--quiet", service) }
+
+func Status(service string) error { return run("status", service) }
+
+// --- timer operations ---
+
+func StopTimer(name string) error    { return run("stop", name) }
+func DisableTimer(name string) error { return run("disable", name) }
+func EnableTimer(name string) error  { return run("enable", name) }
+func StartTimer(name string) error   { return run("start", name) }
+
+// --- unit file rendering ---
 
 const (
-	UserScope SystemdScope = iota
-	SystemScope
+	SubTimerName      = "mihoro-sub.timer"
+	SubServiceName    = "mihoro-sub.service"
+	UpdateTimerName   = "mihoro-update.timer"
+	UpdateServiceName = "mihoro-update.service"
+	MihomoService     = "mihomo.service"
 )
 
-// ServiceManager is the interface for managing systemd services.
-// The real implementation delegates to systemctl; tests use a mock.
-type ServiceManager interface {
-	Start(service string) error
-	Stop(service string) error
-	Restart(service string) error
-	Enable(service string) error
-	Disable(service string) error
-	Status(service string) error
-	DaemonReload() error
-	IsActive(service string) bool
-	IsEnabled(service string) bool
-}
-
-// Systemctl is a fluent builder for systemctl commands.
-// It implements ServiceManager.
-type Systemctl struct {
-	scope SystemdScope
-}
-
-// New creates a Systemctl with the given scope.
-func New(scope SystemdScope) *Systemctl {
-	return &Systemctl{scope: scope}
-}
-
-// scopeArgs returns --user if user-scoped, empty otherwise.
-func (s *Systemctl) scopeArgs() []string {
-	if s.scope == UserScope {
-		return []string{"--user"}
-	}
-	return nil
-}
-
-func (s *Systemctl) run(args ...string) error {
-	cmdArgs := append(s.scopeArgs(), args...)
-	cmd := exec.Command("systemctl", cmdArgs...)
-	cmd.Stdout = nil // inherit
-	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("systemctl %v: %w", args, err)
-	}
-	return nil
-}
-
-func (s *Systemctl) isCmd(args ...string) bool {
-	cmdArgs := append(s.scopeArgs(), args...)
-	return exec.Command("systemctl", cmdArgs...).Run() == nil
-}
-
-// --- ServiceManager implementation ---
-
-func (s *Systemctl) Start(service string) error   { return s.run("start", service) }
-func (s *Systemctl) Stop(service string) error    { return s.run("stop", service) }
-func (s *Systemctl) Restart(service string) error { return s.run("restart", service) }
-func (s *Systemctl) Enable(service string) error  { return s.run("enable", service) }
-func (s *Systemctl) Disable(service string) error { return s.run("disable", service) }
-func (s *Systemctl) Status(service string) error  { return s.run("status", service) }
-func (s *Systemctl) DaemonReload() error          { return s.run("daemon-reload") }
-func (s *Systemctl) ResetFailed() error           { return s.run("reset-failed") }
-
-func (s *Systemctl) IsActive(service string) bool {
-	return s.isCmd("is-active", "--quiet", service)
-}
-
-func (s *Systemctl) IsEnabled(service string) bool {
-	return s.isCmd("is-enabled", "--quiet", service)
-}
-
-// --- systemd unit file template ---
-
-// RenderServiceString generates the content of the mihomo.service unit file.
-//
-// Reference: https://wiki.metacubex.one/startup/service/
-func RenderServiceString(binaryPath, configRoot string, scope SystemdScope) string {
-	wantedBy := "multi-user.target"
-	if scope == UserScope {
-		wantedBy = "default.target"
-	}
+// RenderMihomoService generates the content of the mihomo.service unit file.
+func RenderMihomoService(binaryPath, configRoot string) string {
 	return fmt.Sprintf(`[Unit]
 Description=mihomo Daemon, Another Clash Kernel.
 After=network.target NetworkManager.service systemd-networkd.service iwd.service
@@ -105,6 +53,73 @@ ExecStart=%s -d %s
 ExecReload=/bin/kill -HUP $MAINPID
 
 [Install]
-WantedBy=%s
-`, binaryPath, configRoot, wantedBy)
+WantedBy=multi-user.target
+`, binaryPath, configRoot)
+}
+
+// RenderSubTimer generates the subscription auto-update timer unit.
+func RenderSubTimer() string {
+	return `[Unit]
+Description=mihoro subscription auto-update
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+`
+}
+
+// RenderSubTimerService generates the subscription auto-update service unit.
+func RenderSubTimerService(mihoroBin string) string {
+	return fmt.Sprintf(`[Unit]
+Description=mihoro subscription auto-update
+
+[Service]
+Type=oneshot
+ExecStart=%s sub update --all
+`, mihoroBin)
+}
+
+// RenderUpdateTimer generates the component auto-update timer unit.
+func RenderUpdateTimer() string {
+	return `[Unit]
+Description=mihoro component auto-update
+
+[Timer]
+OnCalendar=Mon *-*-* 01:00:00
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+`
+}
+
+// RenderUpdateTimerService generates the component auto-update service unit.
+func RenderUpdateTimerService(mihoroBin, mirror string) string {
+	cmd := mihoroBin + " update"
+	if mirror != "" {
+		cmd += " --mirror " + mirror
+	}
+	return fmt.Sprintf(`[Unit]
+Description=mihoro component auto-update
+
+[Service]
+Type=oneshot
+ExecStart=%s
+`, cmd)
+}
+
+// --- helpers ---
+
+func run(args ...string) error {
+	if err := exec.Command("systemctl", args...).Run(); err != nil {
+		return fmt.Errorf("systemctl %v: %w", args, err)
+	}
+	return nil
+}
+
+func isCmd(args ...string) bool {
+	return exec.Command("systemctl", args...).Run() == nil
 }

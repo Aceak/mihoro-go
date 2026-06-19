@@ -49,7 +49,15 @@ func GetPorts(mc config.MihomoConfig) (port, socksPort uint16) {
 	if mc.MixedPort != nil {
 		return *mc.MixedPort, *mc.MixedPort
 	}
-	return mc.Port, mc.SocksPort
+	port = 0
+	if mc.Port != nil {
+		port = *mc.Port
+	}
+	socksPort = 0
+	if mc.SocksPort != nil {
+		socksPort = *mc.SocksPort
+	}
+	return port, socksPort
 }
 
 // LocalIP returns the first non-loopback IPv4 address of this machine,

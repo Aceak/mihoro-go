@@ -179,7 +179,7 @@ func ResolveBinary(ctx context.Context, client *http.Client, cfg *config.Config,
 		}
 	}
 
-	version, err := FetchLatestVersion(ctx, client, cfg.MihomoChannel, cfg.MihoroUserAgent)
+	version, err := FetchLatestVersion(ctx, client, cfg.MihomoChannel, "mihoro-go")
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest version: %w", err)
 	}

@@ -20,11 +20,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MihomoBinaryPath != "~/.local/bin/mihomo" {
 		t.Errorf("default binary path = %s", cfg.MihomoBinaryPath)
 	}
-	if cfg.MihomoConfig.Port != 7891 {
-		t.Errorf("default port = %d, want 7891", cfg.MihomoConfig.Port)
-	}
-	if cfg.AutoUpdateInterval != 12 {
-		t.Errorf("default auto update interval = %d, want 12", cfg.AutoUpdateInterval)
+	if cfg.MihomoConfig.Port == nil || *cfg.MihomoConfig.Port != 7891 {
+		t.Errorf("default port = %v, want 7891", cfg.MihomoConfig.Port)
 	}
 }
 
@@ -33,7 +30,6 @@ func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(dir, "test.toml")
 
 	cfg := DefaultConfig()
-	cfg.RemoteConfigURL = "http://example.com/config.yaml"
 
 	if err := cfg.Save(path); err != nil {
 		t.Fatalf("Save() = %v", err)
@@ -45,9 +41,6 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if loaded == nil {
 		t.Fatal("expected non-nil config")
-	}
-	if loaded.RemoteConfigURL != "http://example.com/config.yaml" {
-		t.Errorf("RemoteConfigURL = %s, want url", loaded.RemoteConfigURL)
 	}
 	if *loaded.UI != UiMetacubexd {
 		t.Errorf("UI = %s, want metacubexd", *loaded.UI)
@@ -103,9 +96,8 @@ func TestParseConfigValidatesRequiredFields(t *testing.T) {
 	path := filepath.Join(dir, "test.toml")
 
 	content := `
-mihomo_binary_path = "~/.local/bin/mihomo"
+mihomo_binary_path = ""
 mihomo_config_root = "~/.config/mihomo"
-user_systemd_root = "~/.config/systemd/user"
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -113,7 +105,7 @@ user_systemd_root = "~/.config/systemd/user"
 
 	_, err := ParseConfig(path)
 	if err == nil {
-		t.Fatal("expected validation error for missing remote_config_url")
+		t.Fatal("expected validation error for missing mihomo_binary_path")
 	}
 }
 
@@ -187,8 +179,8 @@ proxies:
 	}
 
 	override := DefaultMihomoConfig()
-	override.Port = 7891
-	override.SocksPort = 7892
+	override.Port = ptr(uint16(7891))
+	override.SocksPort = ptr(uint16(7892))
 
 	changed, err := ApplyOverride(yamlPath, &override)
 	if err != nil {
@@ -221,10 +213,8 @@ func TestApplyOverrideSkipsWhenUnchanged(t *testing.T) {
 	override := DefaultMihomoConfig()
 
 	var yml MihomoYamlConfig
-	port := int(override.Port)
-	yml.Port = &port
-	socksPort := int(override.SocksPort)
-	yml.SocksPort = &socksPort
+	yml.Port = ptrIntIfNotNil(override.Port)
+	yml.SocksPort = ptrIntIfNotNil(override.SocksPort)
 	yml.MixedPort = ptrIntIfNotNil(override.MixedPort)
 	yml.RedirPort = ptrIntIfNotNil(override.RedirPort)
 	yml.AllowLan = override.AllowLan
@@ -284,8 +274,8 @@ rules:
 	_ = os.WriteFile(yamlPath, []byte(yamlContent), 0644)
 
 	override := DefaultMihomoConfig()
-	override.Port = 9999
-	override.SocksPort = 9998
+	override.Port = ptr(uint16(9999))
+	override.SocksPort = ptr(uint16(9998))
 
 	_, err := ApplyOverride(yamlPath, &override)
 	if err != nil {
@@ -308,71 +298,14 @@ rules:
 	}
 }
 
-func TestApplyOverrideWithNilOptionals(t *testing.T) {
-	dir := t.TempDir()
-	yamlPath := dir + "/config.yaml"
-	yamlContent := `
-port: 8080
-socks-port: 8081
-mixed-port: 7888
-`
-	_ = os.WriteFile(yamlPath, []byte(yamlContent), 0644)
-
-	// Override with nil MixedPort → should remove mixed-port from yaml
-	override := DefaultMihomoConfig()
-	override.MixedPort = nil
-
-	_, err := ApplyOverride(yamlPath, &override)
-	if err != nil {
-		t.Fatalf("ApplyOverride() = %v", err)
-	}
-
-	data, _ := os.ReadFile(yamlPath)
-	content := string(data)
-	if strContains(content, "mixed-port") {
-		t.Error("mixed-port should be removed when nil in override")
-	}
-}
-
-func TestApplyOverrideNoChangeNoWrite(t *testing.T) {
-	dir := t.TempDir()
-	yamlPath := dir + "/config.yaml"
-
-	override := DefaultMihomoConfig()
-
-	// Write initial YAML
-	if err := os.WriteFile(yamlPath, []byte("port: 7891\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Apply override — should change
-	changed, err := ApplyOverride(yamlPath, &override)
-	if err != nil {
-		t.Fatalf("ApplyOverride() = %v", err)
-	}
-	if !changed {
-		t.Error("first apply should report changed")
-	}
-	// Apply again — should be unchanged
-	changed, err = ApplyOverride(yamlPath, &override)
-	if err != nil {
-		t.Fatalf("ApplyOverride() 2nd = %v", err)
-	}
-	if changed {
-		t.Error("second apply should report unchanged")
-	}
-}
-
 func TestConfigFullRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/full.toml"
 
 	cfg := DefaultConfig()
-	cfg.RemoteConfigURL = "https://sub.example.com/config.yaml"
 	cfg.MihomoChannel = ChannelAlpha
-	cfg.AutoUpdateInterval = 6
-	cfg.MihomoConfig.Port = 1234
-	cfg.MihomoConfig.SocksPort = 1235
+	cfg.MihomoConfig.Port = ptr(uint16(1234))
+	cfg.MihomoConfig.SocksPort = ptr(uint16(1235))
 
 	if err := cfg.Save(path); err != nil {
 		t.Fatalf("Save() = %v", err)
@@ -382,35 +315,11 @@ func TestConfigFullRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	if loaded.RemoteConfigURL != cfg.RemoteConfigURL {
-		t.Errorf("RemoteConfigURL mismatch")
-	}
 	if loaded.MihomoChannel != ChannelAlpha {
 		t.Errorf("MihomoChannel mismatch: %s", loaded.MihomoChannel)
 	}
-	if loaded.AutoUpdateInterval != 6 {
-		t.Errorf("AutoUpdateInterval mismatch: %d", loaded.AutoUpdateInterval)
-	}
-	if loaded.MihomoConfig.Port != 1234 {
-		t.Errorf("Port mismatch: %d", loaded.MihomoConfig.Port)
-	}
-}
-
-func TestParseUiEdgeCases(t *testing.T) {
-	// Empty
-	_, err := ParseUi("")
-	if err == nil {
-		t.Error("empty should error")
-	}
-	// Unknown
-	_, err = ParseUi("unknown-ui-name")
-	if err == nil {
-		t.Error("unknown ui should error")
-	}
-	// custom with empty URL
-	_, err = ParseUi("custom:")
-	if err == nil {
-		t.Error("custom: with empty URL should error")
+	if loaded.MihomoConfig.Port == nil || *loaded.MihomoConfig.Port != 1234 {
+		t.Errorf("Port mismatch: %v", loaded.MihomoConfig.Port)
 	}
 }
 

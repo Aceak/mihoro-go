@@ -7,16 +7,22 @@ import (
 	"mihoro-go/internal/systemctl"
 )
 
-// Apply applies config overrides and restarts mihomo.service.
+// Apply applies config overrides to the active subscription and restarts mihomo.
 func (m *Mihoro) Apply() error {
-	if _, err := config.ApplyOverride(m.ConfigPath, &m.Config.MihomoConfig); err != nil {
+	activeSub := m.Subs.Active()
+	if activeSub == nil {
+		return fmt.Errorf("no active subscription")
+	}
+
+	subYaml := config.SubDownloadPath(m.ConfigDir, activeSub.Name)
+
+	if err := config.CopyAfterOverride(subYaml, m.MihomoCfg, &m.Config.MihomoConfig); err != nil {
 		return fmt.Errorf("apply override: %w", err)
 	}
 
-	fmt.Printf("%s Applied mihomo config overrides\n", m.Prefix)
+	fmt.Printf("%s Applied overrides\n", m.Prefix)
 
-	sctl := systemctl.New(m.SystemdScope)
-	if err := sctl.Restart("mihomo.service"); err != nil {
+	if err := systemctl.Restart(systemctl.MihomoService); err != nil {
 		return fmt.Errorf("restart service: %w", err)
 	}
 

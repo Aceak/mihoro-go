@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 
+	"mihoro-go/internal/mihoro"
 	"mihoro-go/internal/version"
 
 	"github.com/spf13/cobra"
@@ -22,12 +25,12 @@ var (
 	cliCancel context.CancelFunc
 )
 
-// ANSI color codes for terminal output.
-const (
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorRed    = "\033[31m"
-	colorReset  = "\033[0m"
+// ANSI color codes — defined in mihoro package.
+var (
+	colorGreen  = mihoro.Green
+	colorYellow = mihoro.Yellow
+	colorRed    = mihoro.Red
+	colorReset  = mihoro.Reset
 )
 
 var rootCmd = &cobra.Command{
@@ -38,7 +41,16 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 	SilenceUsage:  true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		cliCtx, cliCancel = signal.NotifyContext(context.Background(), os.Interrupt)
+		expandTilde(&configPath)
+		ctx, cancel := context.WithCancel(context.Background())
+		cliCtx, cliCancel = ctx, cancel
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		go func() {
+			<-sigCh
+			cancel()
+			os.Exit(130)
+		}()
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
@@ -57,6 +69,16 @@ func versionString() string {
 	return v
 }
 
+func expandTilde(path *string) {
+	if *path == "~" {
+		*path = os.Getenv("HOME")
+		return
+	}
+	if after, ok := strings.CutPrefix(*path, "~/"); ok {
+		*path = filepath.Join(os.Getenv("HOME"), after)
+	}
+}
+
 // CliCtx returns the signal-aware CLI context, valid for the duration of
 // the current command execution.
 func CliCtx() context.Context { return cliCtx }
@@ -67,7 +89,6 @@ func Execute() error {
 }
 
 // ExitOnErr prints the error and exits appropriately.
-// Context cancellation gets a clean message and exit code 130.
 func ExitOnErr(err error) {
 	if err == nil {
 		return
@@ -81,10 +102,9 @@ func ExitOnErr(err error) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "~/.config/mihoro.toml", "Path to mihoro config file")
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "~/.config/mihoro", "Path to mihoro config directory")
 
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(applyCmd)
 	rootCmd.AddCommand(startCmd)
@@ -95,6 +115,6 @@ func init() {
 	rootCmd.AddCommand(proxyCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(completionCmd)
-	rootCmd.AddCommand(cronCmd)
+	rootCmd.AddCommand(subCmd)
 	rootCmd.AddCommand(upgradeCmd)
 }

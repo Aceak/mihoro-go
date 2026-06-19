@@ -17,7 +17,7 @@ import (
 )
 
 // InstallUI downloads the dashboard archive and extracts it to targetDir atomically.
-func InstallUI(ctx context.Context, client *http.Client, ui config.Ui, targetDir, userAgent, prefix string) error {
+func InstallUI(ctx context.Context, client *http.Client, ui config.Ui, targetDir, prefix string) error {
 	// Download to temp file
 	tmpFile, err := os.CreateTemp("", "mihoro-ui-*")
 	if err != nil {
@@ -27,7 +27,12 @@ func InstallUI(ctx context.Context, client *http.Client, ui config.Ui, targetDir
 	_ = tmpFile.Close()
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	if err := utils.DownloadFile(ctx, client, ui.DownloadURL(), tmpPath, userAgent, "  web ui     "); err != nil {
+	if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+		URL:      ui.DownloadURL(),
+		DestPath: tmpPath,
+		Label:    "  web ui     ",
+		Retries:  utils.MaxRetries,
+	}); err != nil {
 		return fmt.Errorf("download ui %s: %w", ui.AsConfigValue(), err)
 	}
 

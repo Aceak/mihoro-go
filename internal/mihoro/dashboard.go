@@ -26,11 +26,11 @@ func printDashboardURLs(cfg *config.Config) {
 
 	fmt.Println()
 	if len(urls) == 1 && urls[0].Label == "Dashboard" {
-		fmt.Printf("  Dashboard: %s\n", urls[0].URL)
+		fmt.Printf("Dashboard: %s\n", urls[0].URL)
 	} else {
-		fmt.Println("  Dashboard:")
+		fmt.Println("Dashboard:")
 		for _, u := range urls {
-			fmt.Printf("    %s: %s\n", u.Label, u.URL)
+			fmt.Printf("  %s: %s\n", u.Label, u.URL)
 		}
 	}
 
@@ -38,12 +38,12 @@ func printDashboardURLs(cfg *config.Config) {
 	if cfg.UI != nil {
 		uiName = cfg.UI.AsConfigValue()
 	}
-	fmt.Printf("  Using %s - change via the `ui` field in mihoro.toml\n", uiName)
+	fmt.Printf("Using %s - change via the `ui` field in mihoro.toml\n", uiName)
 
 	if cfg.MihomoConfig.Secret != nil && *cfg.MihomoConfig.Secret != "" {
-		fmt.Println("  Authentication required (secret is set in mihoro.toml)")
+		fmt.Println("Authentication required (secret is set in mihoro.toml)")
 	} else {
-		fmt.Println("  Set `mihomo_config.secret` in mihoro.toml to require a password")
+		fmt.Println("Set `mihomo_config.secret` in mihoro.toml to require a password")
 	}
 }
 

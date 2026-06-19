@@ -14,7 +14,6 @@ import (
 )
 
 var (
-	updateConfigFlag  bool
 	updateCoreFlag    bool
 	updateGeodataFlag bool
 	updateUIFlag      bool
@@ -25,20 +24,18 @@ var (
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update mihomo components (default: core, geodata, ui)",
-	Long:  "Update mihomo components. By default, core + geodata + ui are updated.\nUse --config to also update remote config.",
+	Short: "Update mihomo components (core, geodata, ui)",
+	Long:  "Update mihomo components. By default, core + geodata + ui are updated.",
 	RunE:  runUpdate,
 }
 
 func init() {
-	updateCmd.Flags().BoolVar(&updateConfigFlag, "config", false, "Update remote config")
 	updateCmd.Flags().BoolVar(&updateCoreFlag, "core", false, "Update mihomo core binary")
 	updateCmd.Flags().BoolVar(&updateGeodataFlag, "geodata", false, "Update geodata")
 	updateCmd.Flags().BoolVar(&updateUIFlag, "ui", false, "Update external UI assets")
-	updateCmd.Flags().BoolVar(&updateAllFlag, "all", false, "Update everything: config, geodata, ui, and core")
+	updateCmd.Flags().BoolVar(&updateAllFlag, "all", false, "Update everything: geodata, ui, and core")
 	updateCmd.Flags().StringVar(&updateArch, "arch", "", "Override architecture detection")
 	updateCmd.Flags().StringVar(&updateMirror, "mirror", "", "GitHub mirror base URL (e.g. https://ghfast.top)")
-	updateCmd.MarkFlagsMutuallyExclusive("all", "config")
 	updateCmd.MarkFlagsMutuallyExclusive("all", "core")
 	updateCmd.MarkFlagsMutuallyExclusive("all", "geodata")
 	updateCmd.MarkFlagsMutuallyExclusive("all", "ui")
@@ -46,6 +43,8 @@ func init() {
 
 func runUpdate(cmd *cobra.Command, args []string) error {
 	ctx := CliCtx()
+
+	mirror := updateMirror
 
 	if updateMirror != "" {
 		if !strings.Contains(updateMirror, "://") || !strings.Contains(updateMirror[strings.Index(updateMirror, "://")+3:], ".") {
@@ -59,26 +58,27 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	client := newHTTPClient()
-	m, err := mihoro.New(configPath)
+	dir := configPath
+	m, err := mihoro.New(dir)
 	if err != nil {
 		return err
+	}
+
+	if mirror == "" {
+		mirror = m.Config.GitHubMirror
 	}
 
 	report := mihoro.NewStageReport()
 
 	if updateAllFlag {
-		runStage(report, "config", func() (mihoro.StageStatus, error) {
-			return m.UpdateConfig(ctx, client)
-		})
 		runStage(report, "geodata", func() (mihoro.StageStatus, error) {
-			return m.UpdateGeodata(ctx, client)
+			return m.UpdateGeodata(ctx, newHTTPClient(), mirror)
 		})
 		runStage(report, "ui", func() (mihoro.StageStatus, error) {
-			return m.UpdateUI(ctx, client)
+			return m.UpdateUI(ctx, newHTTPClient(), mirror)
 		})
 		runStage(report, "core", func() (mihoro.StageStatus, error) {
-			return m.UpdateCore(ctx, client, updateArch)
+			return m.UpdateCore(ctx, newHTTPClient(), updateArch, mirror)
 		})
 		if !report.HasFailures() {
 			runStage(report, "service restart", func() (mihoro.StageStatus, error) {
@@ -90,7 +90,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		}
 	} else if updateCoreFlag {
 		runStage(report, "core", func() (mihoro.StageStatus, error) {
-			return m.UpdateCore(ctx, client, updateArch)
+			return m.UpdateCore(ctx, newHTTPClient(), updateArch, mirror)
 		})
 		if !report.HasFailures() && report.HasInstalled("core") {
 			runStage(report, "service restart", func() (mihoro.StageStatus, error) {
@@ -102,34 +102,22 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		}
 	} else if updateUIFlag {
 		runStage(report, "ui", func() (mihoro.StageStatus, error) {
-			return m.UpdateUI(ctx, client)
+			return m.UpdateUI(ctx, newHTTPClient(), mirror)
 		})
 	} else if updateGeodataFlag {
 		runStage(report, "geodata", func() (mihoro.StageStatus, error) {
-			return m.UpdateGeodata(ctx, client)
+			return m.UpdateGeodata(ctx, newHTTPClient(), mirror)
 		})
-	} else if updateConfigFlag {
-		runStage(report, "config", func() (mihoro.StageStatus, error) {
-			return m.UpdateConfig(ctx, client)
-		})
-		if !report.HasFailures() {
-			runStage(report, "service restart", func() (mihoro.StageStatus, error) {
-				if err := m.RestartService(); err != nil {
-					return mihoro.StageFailed, err
-				}
-				return mihoro.StageInstalled, nil
-			})
-		}
 	} else {
 		// Default: update core, geodata, and ui
 		runStage(report, "geodata", func() (mihoro.StageStatus, error) {
-			return m.UpdateGeodata(ctx, client)
+			return m.UpdateGeodata(ctx, newHTTPClient(), mirror)
 		})
 		runStage(report, "ui", func() (mihoro.StageStatus, error) {
-			return m.UpdateUI(ctx, client)
+			return m.UpdateUI(ctx, newHTTPClient(), mirror)
 		})
 		runStage(report, "core", func() (mihoro.StageStatus, error) {
-			return m.UpdateCore(ctx, client, updateArch)
+			return m.UpdateCore(ctx, newHTTPClient(), updateArch, mirror)
 		})
 		if !report.HasFailures() {
 			runStage(report, "service restart", func() (mihoro.StageStatus, error) {

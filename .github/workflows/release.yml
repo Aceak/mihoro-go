@@ -41,8 +41,15 @@ jobs:
           go-version: "1.25"
       - name: Build
         run: make release
+      - name: Generate Release Notes
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+          sed -n "/^## \[$VERSION\]/,/^---/p" CHANGELOG.md | sed '1d' | sed '/^---/d' > release-notes.md
+          echo "" >> release-notes.md
+          echo "**Full Changelog:** https://github.com/${{ github.repository }}/compare/$PREV_TAG...${GITHUB_REF#refs/tags/}" >> release-notes.md
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: release-notes.md

@@ -6,27 +6,39 @@ import (
 	"fmt"
 	"os"
 
-	"mihoro-go/internal/cron"
 	"mihoro-go/internal/systemctl"
 	"mihoro-go/internal/utils"
 )
 
-func (m *Mihoro) Uninstall(ctx context.Context, configPath string, yes bool) error {
-	sctl := systemctl.New(m.SystemdScope)
+func (m *Mihoro) Uninstall(ctx context.Context, mihoroDir string, yes bool) error {
+	// Step 1: stop and remove timers (no prompt)
+	_ = systemctl.StopTimer(systemctl.SubTimerName)
+	_ = systemctl.DisableTimer(systemctl.SubTimerName)
+	_ = systemctl.StopTimer(systemctl.UpdateTimerName)
+	_ = systemctl.DisableTimer(systemctl.UpdateTimerName)
+	_ = os.Remove("/etc/systemd/system/" + systemctl.SubTimerName)
+	_ = os.Remove("/etc/systemd/system/" + systemctl.SubServiceName)
+	_ = os.Remove("/etc/systemd/system/" + systemctl.UpdateTimerName)
+	_ = os.Remove("/etc/systemd/system/" + systemctl.UpdateServiceName)
 
-	// Always stop and disable the service first.
-	_ = sctl.Stop("mihomo.service")
-	_ = sctl.Disable("mihomo.service")
-	_ = sctl.DaemonReload()
-	_ = sctl.ResetFailed()
+	fmt.Printf("%s Stopped and removed auto-update timers\n", m.Prefix)
 
-	fmt.Printf("%s Stopped and disabled mihomo service\n", m.Prefix)
-
-	if err := cron.DisableAutoUpdate(m.Prefix); err != nil {
-		return fmt.Errorf("disable cron: %w", err)
+	// Step 2: mihoro config + subscriptions
+	if yes {
+		_ = os.RemoveAll(mihoroDir)
+		fmt.Printf("%s Removed %s\n", m.Prefix, mihoroDir)
+	} else {
+		ok, err := promptRemove(ctx, m.Prefix, "Remove mihoro config and subscriptions?", mihoroDir)
+		if err != nil {
+			return err
+		}
+		if ok {
+			_ = os.RemoveAll(mihoroDir)
+			fmt.Printf("%s Removed %s\n", m.Prefix, mihoroDir)
+		}
 	}
 
-	// Step 1: mihoro binary itself.
+	// Step 3: mihoro binary
 	if mihoroBin, err := os.Executable(); err == nil {
 		if yes {
 			removeOrFail(mihoroBin, m.Prefix)
@@ -41,44 +53,34 @@ func (m *Mihoro) Uninstall(ctx context.Context, configPath string, yes bool) err
 		}
 	}
 
-	// Step 2: mihoro config (mihoro.toml).
+	// Step 4: mihomo (default keep)
 	if yes {
-		_ = utils.DeleteFile(configPath, m.Prefix)
+		_ = systemctl.Stop(systemctl.MihomoService)
+		_ = systemctl.Disable(systemctl.MihomoService)
+		removeOrFail(m.BinaryPath, m.Prefix)
+		removeOrFail(m.ConfigRoot, m.Prefix)
+		_ = utils.DeleteFile("/etc/systemd/system/"+systemctl.MihomoService, m.Prefix)
 	} else {
-		ok, err := promptRemove(ctx, m.Prefix, "Remove mihoro config?", configPath)
+		ok, err := promptRemove(ctx, m.Prefix, "Remove mihomo as well?",
+			m.BinaryPath, m.ConfigRoot, "/etc/systemd/system/"+systemctl.MihomoService)
 		if err != nil {
 			return err
 		}
 		if ok {
-			_ = utils.DeleteFile(configPath, m.Prefix)
+			_ = systemctl.Stop(systemctl.MihomoService)
+			_ = systemctl.Disable(systemctl.MihomoService)
+			removeOrFail(m.BinaryPath, m.Prefix)
+			removeOrFail(m.ConfigRoot, m.Prefix)
+			_ = utils.DeleteFile("/etc/systemd/system/"+systemctl.MihomoService, m.Prefix)
 		}
 	}
 
-	// Step 3: mihomo related files (binary, config directory, service).
-	if yes {
-		removeOrFail(m.BinaryPath, m.Prefix)
-		removeOrFail(m.ConfigRoot, m.Prefix)
-		_ = utils.DeleteFile(m.ServicePath, m.Prefix)
-	} else {
-		ok, err := promptRemove(ctx, m.Prefix, "Remove mihomo binary, config and service?",
-			m.BinaryPath, m.ConfigRoot, m.ServicePath+"  (service)")
-		if err != nil {
-			return err
-		}
-		if ok {
-			removeOrFail(m.BinaryPath, m.Prefix)
-			removeOrFail(m.ConfigRoot, m.Prefix)
-			_ = utils.DeleteFile(m.ServicePath, m.Prefix)
-		}
-	}
+	_ = systemctl.DaemonReload()
 
 	fmt.Printf("\n%s Uninstall complete\n", m.Prefix)
 	return nil
 }
 
-// promptRemove asks the user a yes/no question with the file paths shown.
-// Returns (true, nil) for yes, (false, nil) for no/skip.
-// Returns (false, err) if the context is cancelled during input.
 func promptRemove(ctx context.Context, prefix, question string, paths ...string) (bool, error) {
 	if ctx.Err() != nil {
 		return false, ctx.Err()
@@ -109,6 +111,6 @@ func removeOrFail(path, prefix string) {
 	if err := os.RemoveAll(path); err != nil {
 		fmt.Printf("  %s Failed: %v\n", prefix, err)
 	} else {
-		fmt.Printf("  Removed %s\n", path)
+		fmt.Printf("  %s Removed %s\n", prefix, path)
 	}
 }

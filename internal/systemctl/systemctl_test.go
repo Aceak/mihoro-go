@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestRenderServiceStringUserScope(t *testing.T) {
-	s := RenderServiceString("/usr/bin/mihomo", "/home/user/.config/mihomo", UserScope)
+func TestRenderMihomoService(t *testing.T) {
+	s := RenderMihomoService("/usr/bin/mihomo", "/home/user/.config/mihomo")
 
 	if !strings.Contains(s, "ExecStart=/usr/bin/mihomo -d /home/user/.config/mihomo") {
 		t.Error("missing ExecStart")
 	}
-	if !strings.Contains(s, "WantedBy=default.target") {
-		t.Error("user scope should use default.target")
+	if !strings.Contains(s, "WantedBy=multi-user.target") {
+		t.Error("should use multi-user.target")
 	}
 	if !strings.Contains(s, "[Unit]") {
 		t.Error("missing [Unit] section")
@@ -25,47 +25,51 @@ func TestRenderServiceStringUserScope(t *testing.T) {
 	}
 }
 
-func TestRenderServiceStringSystemScope(t *testing.T) {
-	s := RenderServiceString("/usr/bin/mihomo", "/etc/mihomo", SystemScope)
+func TestRenderSubTimer(t *testing.T) {
+	s := RenderSubTimer()
 
-	if !strings.Contains(s, "ExecStart=/usr/bin/mihomo -d /etc/mihomo") {
-		t.Error("missing ExecStart")
+	if !strings.Contains(s, "OnCalendar=*-*-* 02:00:00") {
+		t.Error("missing OnCalendar")
 	}
-	if !strings.Contains(s, "WantedBy=multi-user.target") {
-		t.Error("system scope should use multi-user.target")
+	if !strings.Contains(s, "timers.target") {
+		t.Error("missing timers.target")
 	}
 }
 
-// mockServiceManager is a test double for ServiceManager.
-type mockServiceManager struct {
-	startCalled bool
-	stopCalled  bool
-	activeVal   bool
-	enabledVal  bool
+func TestRenderSubTimerService(t *testing.T) {
+	s := RenderSubTimerService("/usr/local/bin/mihoro")
+
+	if !strings.Contains(s, "/usr/local/bin/mihoro sub update --all") {
+		t.Error("missing mihoro sub update --all")
+	}
+	if !strings.Contains(s, "Type=oneshot") {
+		t.Error("missing Type=oneshot")
+	}
 }
 
-func (m *mockServiceManager) Start(s string) error    { m.startCalled = true; return nil }
-func (m *mockServiceManager) Stop(s string) error     { m.stopCalled = true; return nil }
-func (m *mockServiceManager) Restart(s string) error  { return nil }
-func (m *mockServiceManager) Enable(s string) error   { return nil }
-func (m *mockServiceManager) Disable(s string) error  { return nil }
-func (m *mockServiceManager) Status(s string) error   { return nil }
-func (m *mockServiceManager) DaemonReload() error     { return nil }
-func (m *mockServiceManager) IsActive(s string) bool  { return m.activeVal }
-func (m *mockServiceManager) IsEnabled(s string) bool { return m.enabledVal }
+func TestRenderUpdateTimer(t *testing.T) {
+	s := RenderUpdateTimer()
 
-func TestMockServiceManager(t *testing.T) {
-	m := &mockServiceManager{activeVal: true, enabledVal: false}
-
-	if !m.IsActive("mihomo.service") {
-		t.Error("expected active")
+	if !strings.Contains(s, "OnCalendar=Mon *-*-* 01:00:00") {
+		t.Error("missing OnCalendar")
 	}
-	if m.IsEnabled("mihomo.service") {
-		t.Error("expected not enabled")
-	}
+}
 
-	_ = m.Start("mihomo.service")
-	if !m.startCalled {
-		t.Error("Start should have been called")
+func TestRenderUpdateTimerService(t *testing.T) {
+	s := RenderUpdateTimerService("/usr/local/bin/mihoro", "https://ghfast.top")
+
+	if !strings.Contains(s, "/usr/local/bin/mihoro update --mirror https://ghfast.top") {
+		t.Error("missing mihoro update --mirror")
+	}
+}
+
+func TestRenderUpdateTimerServiceNoMirror(t *testing.T) {
+	s := RenderUpdateTimerService("/usr/local/bin/mihoro", "")
+
+	if !strings.Contains(s, "/usr/local/bin/mihoro update") {
+		t.Error("missing mihoro update")
+	}
+	if strings.Contains(s, "--mirror") {
+		t.Error("should not contain --mirror")
 	}
 }

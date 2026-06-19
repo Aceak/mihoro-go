@@ -38,8 +38,8 @@ type GeoxUrl struct {
 // MihomoConfig — [mihomo_config] section in mihoro.toml.
 // Used to override fields in the remote config.yaml on every apply.
 type MihomoConfig struct {
-	Port               uint16   `toml:"port"`
-	SocksPort          uint16   `toml:"socks_port"`
+	Port               *uint16  `toml:"port,omitempty"`
+	SocksPort          *uint16  `toml:"socks_port,omitempty"`
 	MixedPort          *uint16  `toml:"mixed_port,omitempty"`
 	RedirPort          *uint16  `toml:"redir_port,omitempty"`
 	AllowLan           *bool    `toml:"allow_lan,omitempty"`
@@ -68,8 +68,8 @@ func DefaultMihomoConfig() MihomoConfig {
 	geoUpdateInterval := uint16(24)
 
 	return MihomoConfig{
-		Port:               7891,
-		SocksPort:          7892,
+		Port:               ptr(uint16(7891)),
+		SocksPort:          ptr(uint16(7892)),
 		MixedPort:          ptr(uint16(7890)),
 		RedirPort:          nil,
 		AllowLan:           &allowLan,

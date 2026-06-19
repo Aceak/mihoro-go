@@ -13,7 +13,7 @@ var uninstallCmd = &cobra.Command{
 	Short: "Uninstall and remove mihoro and config",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		m := mihoro.NewOrDefault(configPath)
-		return m.Uninstall(CliCtx(), mihoro.ExpandTilde(configPath), uninstallYes)
+		return m.Uninstall(CliCtx(), configPath, uninstallYes)
 	},
 }
 

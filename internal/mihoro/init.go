@@ -6,150 +6,167 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"mihoro-go/internal/bin"
 	"mihoro-go/internal/config"
 	"mihoro-go/internal/proxy"
 	"mihoro-go/internal/systemctl"
-	"mihoro-go/internal/ui"
 	"mihoro-go/internal/utils"
 )
 
 // InitOptions holds the flags for `mihoro init`.
 type InitOptions struct {
-	Force     bool   // Re-download all artifacts even if they already exist
-	Arch      string // Override architecture detection (e.g. "amd64", "arm64")
-	Yes       bool   // Non-interactive mode: fail if required fields are missing
-	System    bool   // Install as system-level service (requires root)
-	UserAgent string // Custom User-Agent header for HTTP requests
-	Subscribe string // Remote subscription URL (bypasses interactive prompt)
-	AllowLan  bool   // Enable LAN access (sets allow_lan in mihomo config.yaml)
+	Force    bool
+	Arch     string
+	AllowLan bool
 }
 
-// --- bootstrap ---
-
-// bootstrapConfig ensures a config file exists and has a remote URL.
-// In interactive mode it prompts the user; in --yes mode it returns an error.
-// Returns the parsed config, or nil + error if the user cancels (context.Canceled).
-func bootstrapConfig(ctx context.Context, configPath string, yes bool) (*config.Config, error) {
-	justCreated, err := config.WriteDefaultIfMissing(configPath)
+func bootstrapConfig(mihoroDir string) (*config.Config, *config.SubscriptionsFile, error) {
+	cfg, sf, err := loadOrCreateConfig(mihoroDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	cfg, err := config.Load(configPath)
+	if len(sf.Subscriptions) > 0 {
+		if active := sf.Active(); active != nil {
+			lastUpdate := "-"
+			if active.LastUpdate != "" {
+				lastUpdate = active.LastUpdate[:10] + " " + active.LastUpdate[11:16]
+			}
+			stat := "never"
+			switch active.LastStatus {
+			case "success":
+				stat = fmt.Sprintf("OK (%dKB)", active.LastSize/1024)
+			case "failed":
+				stat = active.LastError
+			}
+			fmt.Printf("active subscription: %s  last update: %s  status: %s\n", active.Name, lastUpdate, stat)
+		}
+	} else {
+		return nil, nil, fmt.Errorf("no subscriptions configured. Use 'mihoro sub add' to add one")
+	}
+
+	return cfg, sf, nil
+}
+
+func loadOrCreateConfig(mihoroDir string) (*config.Config, *config.SubscriptionsFile, error) {
+	if err := os.MkdirAll(mihoroDir, 0755); err != nil {
+		return nil, nil, fmt.Errorf("create config dir: %w", err)
+	}
+
+	cfgPath := ConfigPath(mihoroDir)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cfg == nil {
 		c := config.DefaultConfig()
 		cfg = &c
+		if err := cfg.Save(cfgPath); err != nil {
+			return nil, nil, err
+		}
 	}
 
-	if cfg.RemoteConfigURL == "" {
-		if yes {
-			return nil, fmt.Errorf("remote_config_url is not set - edit %q or run `mihoro init` interactively", configPath)
-		}
-		if justCreated {
-			fmt.Printf("mihoro: Created default config at %s\n", configPath)
-		}
-		fmt.Println("mihoro: Enter your remote subscription URL:")
-		url, err := promptURL(ctx)
-		if err != nil {
-			return nil, err
-		}
-		cfg.RemoteConfigURL = url
-		if err := cfg.Save(configPath); err != nil {
-			return nil, fmt.Errorf("save config: %w", err)
-		}
+	sf, err := config.LoadSubscriptions(mihoroDir)
+	if err != nil {
+		return nil, nil, err
 	}
-	return cfg, nil
+
+	return cfg, sf, nil
 }
 
-// promptURL reads a subscription URL from stdin. Returns context.Canceled on Ctrl+C.
-func promptURL(ctx context.Context) (string, error) {
-	fmt.Print("Remote subscription URL: ")
+func promptBool(question, defaultValue string) bool {
+	var def string
+	if strings.EqualFold(defaultValue, "y") {
+		def = "Y/n"
+	} else {
+		def = "y/N"
+	}
+	fmt.Printf("%s [%s]: ", question, def)
+
 	scanner := bufio.NewScanner(os.Stdin)
 	if !scanner.Scan() {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", fmt.Errorf("no input")
+		return strings.EqualFold(defaultValue, "y")
 	}
-	url := strings.TrimSpace(scanner.Text())
-	if url == "" {
-		return "", fmt.Errorf("URL cannot be empty")
+	val := strings.TrimSpace(scanner.Text())
+	if val == "" {
+		return strings.EqualFold(defaultValue, "y")
 	}
-	return url, scanner.Err()
+	return strings.EqualFold(val, "y") || strings.EqualFold(val, "yes")
 }
 
-// --- RunInit ---
+func promptString(question, defaultValue string) string {
+	if defaultValue != "" {
+		fmt.Printf("%s [%s]: ", question, defaultValue)
+	} else {
+		fmt.Printf("%s: ", question)
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return defaultValue
+	}
+	val := strings.TrimSpace(scanner.Text())
+	if val == "" {
+		return defaultValue
+	}
+	return val
+}
 
-func RunInit(ctx context.Context, client *http.Client, configPath string, opts InitOptions) error {
-	configPath = ExpandTilde(configPath)
-	cfg, err := bootstrapConfig(ctx, configPath, opts.Yes)
+func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts InitOptions, mirrorFlag string) error {
+	mihoroDir = ExpandTilde(mihoroDir)
+	mirror := mirrorFlag
+
+	fmt.Printf("config dir: %s\n", mihoroDir)
+
+	cfg, sf, err := bootstrapConfig(mihoroDir)
 	if err != nil {
 		return err
 	}
 
-	// Apply optional flag overrides, then save once.
-	dirty := false
-	if opts.Subscribe != "" {
-		cfg.RemoteConfigURL = opts.Subscribe
-		dirty = true
-	}
 	if opts.AllowLan {
 		allowLan := true
 		cfg.MihomoConfig.AllowLan = &allowLan
-		dirty = true
 	}
-	if opts.UserAgent != "" {
-		cfg.MihoroUserAgent = opts.UserAgent
-		dirty = true
+
+	m := FromConfig(cfg, sf, mihoroDir)
+
+	if !opts.Force && len(sf.Subscriptions) > 0 && sf.Active() != nil && m.binaryUsable() {
+		fmt.Printf("%sAlready initialized.%s Use --force to reconfigure.\n", Green, Reset)
+		return nil
 	}
-	if dirty {
-		if err := cfg.Save(configPath); err != nil {
-			return fmt.Errorf("save config: %w", err)
+
+	if mirror == "" {
+		mirror = cfg.GitHubMirror
+	}
+
+	alreadyLan := cfg.MihomoConfig.AllowLan != nil && *cfg.MihomoConfig.AllowLan
+	if !opts.AllowLan && !alreadyLan {
+		if promptBool("Allow LAN access?", "N") {
+			allowLan := true
+			cfg.MihomoConfig.AllowLan = &allowLan
 		}
-	}
-
-	if err := validateConfig(cfg); err != nil {
-		return err
-	}
-
-	if opts.System {
-		testFile := "/etc/systemd/system/.mihoro_test"
-		if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
-			return fmt.Errorf("--system requires root privileges\n       Try: sudo mihoro init --system")
 		}
-		_ = os.Remove(testFile)
-	}
-
-	m := FromConfig(cfg, opts.System)
-
-	fmt.Println("mihoro: initializing")
-	fmt.Printf("  Config:  %s\n", configPath)
-	fmt.Printf("  Remote:  %s\n", cfg.RemoteConfigURL)
-	if mirror := os.Getenv("MIHORO_GITHUB_MIRROR"); mirror != "" {
-		fmt.Printf("  Mirror:  %s\n", mirror)
-	}
-	fmt.Println()
 
 	force := opts.Force
 	arch := opts.Arch
 
-	// --- Phase 1: downloads ---
-	fmt.Println("  Downloading components:")
-
-	if _, err := m.EnsureRemoteConfig(ctx, client, force); err != nil {
+	if _, err := m.EnsureSubscription(ctx, client); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	binaryPlan, err := m.PrepareBinary(ctx, client, force, arch)
+	if mirror != "" {
+		fmt.Printf("Downloading components via %s...\n", mirror)
+	} else {
+		fmt.Println("Downloading components...")
+	}
+	binaryPlan, err := m.PrepareBinary(ctx, client, force, arch, mirror)
 	if err != nil {
 		return err
 	}
@@ -157,23 +174,51 @@ func RunInit(ctx context.Context, client *http.Client, configPath string, opts I
 		return ctx.Err()
 	}
 
-	if _, err := m.EnsureGeodata(ctx, client, force); err != nil {
+	if _, err := m.EnsureGeodata(ctx, client, force, mirror); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	if _, err := m.EnsureUI(ctx, client, force); err != nil {
+	if _, err := m.EnsureUI(ctx, client, force, mirror); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	// --- Phase 2: install ---
-	fmt.Println()
-	fmt.Println("  Installing:")
+	var installTimers bool
+	timerPath := "/etc/systemd/system/" + systemctl.UpdateTimerName
+	timerExists := fileExists(timerPath)
+	if timerExists && !opts.Force {
+		fmt.Printf("  %sauto-update enabled%s (weekly, Mon 01:00)\n", Green, Reset)
+		if cfg.GitHubMirror != "" {
+			fmt.Printf("  mirror: %s\n", cfg.GitHubMirror)
+		}
+	} else {
+		if promptBool("Enable component auto-update? (weekly, Mon 01:00)", "Y") {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			installTimers = true
+			if mirrorFlag != "" {
+				cfg.GitHubMirror = mirrorFlag
+			} else {
+				mirrorURL := promptString("Mirror URL (optional, leave empty to skip)", "")
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if mirrorURL != "" {
+					cfg.GitHubMirror = mirrorURL
+				}
+			}
+		}
+	}
+
+	if err := cfg.Save(ConfigPath(mihoroDir)); err != nil {
+		fmt.Printf("  %swarning:%s save config: %v\n", Yellow, Reset, err)
+	}
 
 	if binaryPlan.ShouldInstall() {
 		if _, err := m.InstallBinary(ctx, binaryPlan.TempFile); err != nil {
@@ -181,37 +226,44 @@ func RunInit(ctx context.Context, client *http.Client, configPath string, opts I
 		}
 	}
 
-	if _, err := m.EnsureService(ctx); err != nil {
+	if _, err := m.EnsureService(ctx, force); err != nil {
 		return fmt.Errorf("service: %w", err)
 	}
 
-	if _, err := m.EnsureServiceRunning(ctx); err != nil {
+	if _, err := m.EnsureServiceRunning(ctx, force); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
 
-	fmt.Println()
+	if installTimers {
+		binPath, _ := os.Executable()
+		if binPath == "" {
+			binPath = "/usr/local/bin/mihoro"
+		}
+		if err := WriteTimerUnits(mihoroDir, binPath, cfg.GitHubMirror); err != nil {
+			fmt.Printf("  %swarning:%s failed to install timers: %v\n", Yellow, Reset, err)
+		} else {
+			fmt.Printf("  %sauto-update enabled%s\n", Green, Reset)
+		}
+	}
+
 	if cfg.UI != nil {
 		printDashboardURLs(cfg)
 	}
-	if opts.AllowLan {
+	if opts.AllowLan || (cfg.MihomoConfig.AllowLan != nil && *cfg.MihomoConfig.AllowLan) {
 		printLanProxyInfo(cfg)
 	}
 	return nil
 }
 
-// --- Init methods on Mihoro ---
-
-func (m *Mihoro) PrepareBinary(ctx context.Context, client *http.Client, force bool, archOverride string) (BinaryPlan, error) {
+func (m *Mihoro) PrepareBinary(ctx context.Context, client *http.Client, force bool, archOverride string, mirror string) (BinaryPlan, error) {
 	if !force && m.binaryUsable() {
-		fmt.Printf("  mihomo core %s\n", m.BinaryPath)
-		return BinaryPlan{SkipReason: fmt.Sprintf("binary exists at %s", m.BinaryPath)}, nil
+		fmt.Printf("  mihomo core %sAlready present%s\n", Green, Reset)
+		return BinaryPlan{SkipReason: "binary exists"}, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "  mihomo core checking version...\033[K\r")
 	url, err := bin.ResolveBinaryURL(ctx, client, m.Config, archOverride)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\r  mihomo core \033[K\n")
-		return BinaryPlan{}, fmt.Errorf("resolve binary URL: %w", err)
+		return BinaryPlan{}, fmt.Errorf("resolve binary URL: %w\n  (Hint: use --mirror <url> to download via a github mirror)", err)
 	}
 
 	tmpFile, err := os.CreateTemp("", "mihoro-binary-*")
@@ -221,22 +273,23 @@ func (m *Mihoro) PrepareBinary(ctx context.Context, client *http.Client, force b
 	tmpPath := tmpFile.Name()
 	_ = tmpFile.Close()
 
-	if err := utils.DownloadFile(ctx, client, url, tmpPath, m.Config.MihoroUserAgent, "  mihomo core"); err != nil {
+	if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+		URL:      url,
+		DestPath: tmpPath,
+		Label:    "  mihomo core",
+		Retries:  utils.MaxRetries,
+	}); err != nil {
 		_ = os.Remove(tmpPath)
-		return BinaryPlan{}, fmt.Errorf("download binary: %w", err)
+		return BinaryPlan{}, fmt.Errorf("download binary: %w\n  (Hint: use --mirror <url> to download via a github mirror)", err)
 	}
 
 	return BinaryPlan{TempFile: tmpPath}, nil
 }
 
 func (m *Mihoro) InstallBinary(ctx context.Context, tempFilePath string) (StageStatus, error) {
-	if _, err := os.Stat(m.BinaryPath); err == nil {
-		fmt.Println("  install     Stopping mihomo.service before overwriting...")
-		sctl := systemctl.New(m.SystemdScope)
-		_ = sctl.Stop("mihomo.service")
-	}
+	_ = systemctl.Stop(systemctl.MihomoService)
 
-	if err := utils.ExtractGzip(tempFilePath, m.BinaryPath, "   "); err != nil {
+	if err := utils.ExtractGzip(tempFilePath, m.BinaryPath, "  "); err != nil {
 		return StageFailed, fmt.Errorf("extract binary: %w", err)
 	}
 	defer func() { _ = os.Remove(tempFilePath) }()
@@ -244,43 +297,68 @@ func (m *Mihoro) InstallBinary(ctx context.Context, tempFilePath string) (StageS
 	if err := os.Chmod(m.BinaryPath, 0755); err != nil {
 		return StageFailed, fmt.Errorf("chmod binary: %w", err)
 	}
-
-	fmt.Printf("  install     Installed to %s\n", m.BinaryPath)
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureRemoteConfig(ctx context.Context, client *http.Client, force bool) (StageStatus, error) {
-	if !force {
-		if _, err := os.Stat(m.ConfigPath); err == nil {
-			changed, err := config.ApplyOverride(m.ConfigPath, &m.Config.MihomoConfig)
-			if err != nil {
-				return StageFailed, fmt.Errorf("apply override: %w", err)
-			}
-			if changed {
-				fmt.Println("  subscribe   Updated overrides")
-				return StageInstalled, nil
-			}
-			fmt.Println("  subscribe   Already current")
-			return StageSkipped, nil
-		}
+func (m *Mihoro) EnsureSubscription(ctx context.Context, client *http.Client) (StageStatus, error) {
+	sub := m.Subs.Active()
+	if sub == nil {
+		return StageFailed, fmt.Errorf("no active subscription")
 	}
 
-	if err := utils.DownloadFile(ctx, client, m.Config.RemoteConfigURL, m.ConfigPath, m.Config.MihoroUserAgent, "  subscribe  "); err != nil {
+	destPath := config.SubDownloadPath(m.ConfigDir, sub.Name)
+
+	if _, err := os.Stat(destPath); err == nil {
+		if err := config.CopyAfterOverride(destPath, m.MihomoCfg, &m.Config.MihomoConfig); err != nil {
+			return StageFailed, fmt.Errorf("apply override: %w", err)
+		}
+		return StageSkipped, nil
+	}
+
+	ua := sub.UserAgent
+	if ua == "" {
+		ua = "clash/mihoro-go"
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return StageFailed, err
 	}
 
-	if err := utils.TryDecodeBase64InPlace(m.ConfigPath); err != nil {
-		return StageFailed, fmt.Errorf("decode config: %w", err)
+	_, err := utils.Download(ctx, client, utils.DownloadOptions{
+		URL:       sub.URL,
+		DestPath:  destPath,
+		UserAgent: ua,
+		Headers:   sub.Headers,
+		ProxyURL:  sub.Proxy,
+		Retries:   2,
+	})
+	if err != nil {
+		return StageFailed, err
 	}
 
-	if _, err := config.ApplyOverride(m.ConfigPath, &m.Config.MihomoConfig); err != nil {
-		return StageFailed, fmt.Errorf("apply override: %w", err)
+	if err := utils.TryDecodeBase64InPlace(destPath); err != nil {
+		return StageFailed, fmt.Errorf("decode: %w", err)
 	}
 
+	if err := config.CopyAfterOverride(destPath, m.MihomoCfg, &m.Config.MihomoConfig); err != nil {
+		return StageFailed, err
+	}
+
+	now := time.Now()
+	sub.LastUpdate = now.Format(time.RFC3339)
+	sub.LastStatus = "success"
+	sub.LastError = ""
+	if info, err := os.Stat(destPath); err == nil {
+		sub.LastSize = info.Size()
+	}
+	m.Subs.Update(sub.Name, *sub)
+	m.Subs.Save()
+
+	fmt.Println("  subscribe    Downloaded")
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force bool) (StageStatus, error) {
+func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force bool, mirror string) (StageStatus, error) {
 	geox := m.Config.MihomoConfig.GeoxUrl
 	if geox == nil {
 		return StageSkipped, nil
@@ -295,32 +373,44 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 		geoipPath := m.ConfigRoot + "/geoip.dat"
 		geositePath := m.ConfigRoot + "/geosite.dat"
 		if !force {
-			_, err1 := os.Stat(geoipPath)
-			_, err2 := os.Stat(geositePath)
-			if err1 == nil && err2 == nil {
-				fmt.Println("  geodata     Already present")
+			if fileExists(geoipPath) && fileExists(geositePath) {
+				fmt.Printf("  geodata      %sAlready present%s\n", Green, Reset)
 				return StageSkipped, nil
 			}
 		}
 		if force || !fileExists(geoipPath) {
-			if err := utils.DownloadFile(ctx, client, geox.Geoip, geoipPath, m.Config.MihoroUserAgent, "  geodata    "); err != nil {
+			if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+				URL:      geox.Geoip,
+				DestPath: geoipPath,
+				Label:    "  geodata    ",
+				Retries:  utils.MaxRetries,
+			}); err != nil {
 				return StageFailed, fmt.Errorf("download geoip.dat: %w", err)
 			}
 		}
 		if force || !fileExists(geositePath) {
-			if err := utils.DownloadFile(ctx, client, geox.Geosite, geositePath, m.Config.MihoroUserAgent, "  geodata    "); err != nil {
+			if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+				URL:      geox.Geosite,
+				DestPath: geositePath,
+				Label:    "  geodata    ",
+				Retries:  utils.MaxRetries,
+			}); err != nil {
 				return StageFailed, fmt.Errorf("download geosite.dat: %w", err)
 			}
 		}
 	} else {
 		mmdbPath := m.ConfigRoot + "/country.mmdb"
-		if !force {
-			if _, err := os.Stat(mmdbPath); err == nil {
-				fmt.Println("  geodata     Already present")
-				return StageSkipped, nil
-			}
+		if !force && fileExists(mmdbPath) {
+			fmt.Printf("  geodata      %sAlready present%s\n", Green, Reset)
+			return StageSkipped, nil
 		}
-		if err := utils.DownloadFile(ctx, client, geox.Mmdb, mmdbPath, m.Config.MihoroUserAgent, "  geodata    "); err != nil {
+		if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+			URL:      geox.Mmdb,
+			DestPath: mmdbPath,
+			Label:    "  geodata    ",
+			Retries:  utils.MaxRetries,
+			Timeout:   30 * time.Second,
+		}); err != nil {
 			return StageFailed, fmt.Errorf("download country.mmdb: %w", err)
 		}
 	}
@@ -328,7 +418,7 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureUI(ctx context.Context, client *http.Client, force bool) (StageStatus, error) {
+func (m *Mihoro) EnsureUI(ctx context.Context, client *http.Client, force bool, mirror string) (StageStatus, error) {
 	uiCfg := m.Config.UI
 	if uiCfg == nil {
 		return StageSkipped, nil
@@ -341,68 +431,64 @@ func (m *Mihoro) EnsureUI(ctx context.Context, client *http.Client, force bool) 
 
 	targetDir := resolveExternalUIPath(m.ConfigRoot, *externalUI)
 
-	if !force {
-		if _, err := os.Stat(targetDir + "/index.html"); err == nil {
-			fmt.Println("  web ui      Already installed")
-			return StageSkipped, nil
-		}
+	if !force && fileExists(targetDir+"/index.html") {
+		fmt.Printf("  web ui       %sAlready installed%s\n", Green, Reset)
+		return StageSkipped, nil
 	}
 
-	if err := ui.InstallUI(ctx, client, *uiCfg, targetDir, m.Config.MihoroUserAgent, "   "); err != nil {
+	if err := installUI(ctx, client, *uiCfg, targetDir); err != nil {
 		return StageFailed, fmt.Errorf("install ui: %w", err)
 	}
 
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureService(ctx context.Context) (StageStatus, error) {
-	serviceContent := systemctl.RenderServiceString(m.BinaryPath, m.ConfigRoot, m.SystemdScope)
+func (m *Mihoro) EnsureService(ctx context.Context, force bool) (StageStatus, error) {
+	serviceContent := systemctl.RenderMihomoService(m.BinaryPath, m.ConfigRoot)
+	servicePath := "/etc/systemd/system/" + systemctl.MihomoService
 
-	existing, err := os.ReadFile(m.ServicePath)
-	if err == nil && string(existing) == serviceContent {
-		fmt.Println("  systemd     Already configured")
-		return StageSkipped, nil
+	if !force {
+		if existing, err := os.ReadFile(servicePath); err == nil && string(existing) == serviceContent {
+			fmt.Printf("  systemd      %sAlready configured%s\n", Green, Reset)
+			return StageSkipped, nil
+		}
 	}
 
-	if err := os.MkdirAll(strings.TrimSuffix(m.ServicePath, "/mihomo.service"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(servicePath), 0755); err != nil {
 		return StageFailed, fmt.Errorf("create service dir: %w", err)
 	}
-	if err := os.WriteFile(m.ServicePath, []byte(serviceContent), 0644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
 		return StageFailed, fmt.Errorf("write service file: %w", err)
 	}
 
-	sctl := systemctl.New(m.SystemdScope)
-	if err := sctl.DaemonReload(); err != nil {
+	if err := systemctl.DaemonReload(); err != nil {
 		return StageFailed, fmt.Errorf("daemon-reload: %w", err)
 	}
-
-	fmt.Printf("  systemd     Created %s\n", m.ServicePath)
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureServiceRunning(ctx context.Context) (StageStatus, error) {
-	sctl := systemctl.New(m.SystemdScope)
-
-	if sctl.IsActive("mihomo.service") && sctl.IsEnabled("mihomo.service") {
-		fmt.Println("  start       Already running")
+func (m *Mihoro) EnsureServiceRunning(ctx context.Context, force bool) (StageStatus, error) {
+	if !force && systemctl.IsActive(systemctl.MihomoService) && systemctl.IsEnabled(systemctl.MihomoService) {
+		fmt.Printf("  start        %sAlready running%s\n", Green, Reset)
 		return StageSkipped, nil
 	}
 
-	if !sctl.IsEnabled("mihomo.service") {
-		if err := sctl.Enable("mihomo.service"); err != nil {
+	if force {
+		_ = systemctl.Stop(systemctl.MihomoService)
+	}
+
+	if !systemctl.IsEnabled(systemctl.MihomoService) {
+		if err := systemctl.Enable(systemctl.MihomoService); err != nil {
 			return StageFailed, fmt.Errorf("enable: %w", err)
 		}
 	}
-	if !sctl.IsActive("mihomo.service") {
-		if err := sctl.Start("mihomo.service"); err != nil {
+	if force || !systemctl.IsActive(systemctl.MihomoService) {
+		if err := systemctl.Start(systemctl.MihomoService); err != nil {
 			return StageFailed, fmt.Errorf("start: %w", err)
 		}
 	}
-	fmt.Println("  start       Started")
 	return StageInstalled, nil
 }
-
-// --- helpers ---
 
 func (m *Mihoro) binaryUsable() bool {
 	if _, err := os.Stat(m.BinaryPath); os.IsNotExist(err) {
@@ -412,20 +498,6 @@ func (m *Mihoro) binaryUsable() bool {
 	return err == nil
 }
 
-func validateConfig(cfg *config.Config) error {
-	for _, f := range []struct{ name, val string }{
-		{"remote_config_url", cfg.RemoteConfigURL},
-		{"mihomo_binary_path", cfg.MihomoBinaryPath},
-		{"mihomo_config_root", cfg.MihomoConfigRoot},
-		{"user_systemd_root", cfg.UserSystemdRoot},
-	} {
-		if f.val == "" {
-			return fmt.Errorf("%q is undefined", f.name)
-		}
-	}
-	return nil
-}
-
 func resolveExternalUIPath(configRoot, externalUI string) string {
 	if strings.HasPrefix(externalUI, "/") {
 		return externalUI
@@ -433,14 +505,62 @@ func resolveExternalUIPath(configRoot, externalUI string) string {
 	return configRoot + "/" + externalUI
 }
 
-// --- LAN proxy info ---
+func installUI(ctx context.Context, client *http.Client, uiCfg config.Ui, targetDir string) error {
+	url := uiCfg.DownloadURL()
+	tmpDir, err := os.MkdirTemp("", "mihoro-ui-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, "ui-archive")
+
+	if _, err := utils.Download(ctx, client, utils.DownloadOptions{
+		URL:      url,
+		DestPath: archivePath,
+		Label:    "  web ui     ",
+		Retries:  utils.MaxRetries,
+	}); err != nil {
+		return err
+	}
+
+	extractDir := filepath.Join(tmpDir, "extracted")
+	if err := os.MkdirAll(extractDir, 0755); err != nil {
+		return err
+	}
+
+	if strings.HasSuffix(url, ".tar.gz") || strings.HasSuffix(url, ".tgz") {
+		cmd := exec.Command("tar", "-xzf", archivePath, "-C", extractDir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("extract tar: %w\n%s", err, string(out))
+		}
+	} else {
+		cmd := exec.Command("unzip", "-qo", archivePath, "-d", extractDir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("extract zip: %w\n%s", err, string(out))
+		}
+	}
+
+	entries, _ := os.ReadDir(extractDir)
+	if len(entries) == 1 && entries[0].IsDir() {
+		extractDir = filepath.Join(extractDir, entries[0].Name())
+	}
+
+	_ = os.RemoveAll(targetDir)
+	if err := os.MkdirAll(filepath.Dir(targetDir), 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(extractDir, targetDir); err != nil {
+		return fmt.Errorf("install ui to %s: %w", targetDir, err)
+	}
+	return nil
+}
 
 func printLanProxyInfo(cfg *config.Config) {
 	ip := proxy.LocalIP()
 	shell := proxy.DetectShell()
 	port, socksPort := proxy.GetPorts(cfg.MihomoConfig)
-
-	fmt.Println("  LAN proxy enabled:")
-	fmt.Printf("    %s\n", proxy.ExportCmd(shell, ip, port, socksPort))
-	fmt.Println("    Use `mihoro proxy export-lan` to regenerate this command")
+	fmt.Println("LAN proxy enabled:")
+	fmt.Printf("  %s\n", proxy.ExportCmd(shell, ip, port, socksPort))
+	fmt.Println("  Use `mihoro proxy export-lan` to regenerate this command")
 }

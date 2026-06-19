@@ -8,33 +8,26 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config — mihoro top-level configuration (mihoro.toml).
+// Config — mihoro top-level configuration (config.toml).
 type Config struct {
-	RemoteConfigURL       string        `toml:"remote_config_url"`
 	UI                    *Ui           `toml:"ui,omitempty"`
 	MihomoChannel         MihomoChannel `toml:"mihomo_channel"`
 	RemoteMihomoBinaryURL *string       `toml:"remote_mihomo_binary_url,omitempty"`
 	MihomoArch            *string       `toml:"mihomo_arch,omitempty"`
 	MihomoBinaryPath      string        `toml:"mihomo_binary_path"`
 	MihomoConfigRoot      string        `toml:"mihomo_config_root"`
-	UserSystemdRoot       string        `toml:"user_systemd_root"`
-	MihoroUserAgent       string        `toml:"mihoro_user_agent"`
-	AutoUpdateInterval    uint16        `toml:"auto_update_interval"`
 	MihomoConfig          MihomoConfig  `toml:"mihomo_config"`
+	GitHubMirror          string        `toml:"github_mirror,omitempty"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		UI:                 DefaultUi(),
-		MihomoChannel:      ChannelStable,
-		RemoteConfigURL:    "",
-		MihomoBinaryPath:   "~/.local/bin/mihomo",
-		MihomoConfigRoot:   "~/.config/mihomo",
-		UserSystemdRoot:    "~/.config/systemd/user",
-		MihoroUserAgent:    "clash/mihoro-go",
-		AutoUpdateInterval: 12,
-		MihomoConfig:       DefaultMihomoConfig(),
+		UI:               DefaultUi(),
+		MihomoChannel:    ChannelStable,
+		MihomoBinaryPath: "~/.local/bin/mihomo",
+		MihomoConfigRoot: "~/.config/mihomo",
+		MihomoConfig:     DefaultMihomoConfig(),
 	}
 }
 
@@ -120,10 +113,8 @@ func validateConfig(cfg *Config) error {
 		value string
 	}
 	for _, r := range []req{
-		{"remote_config_url", cfg.RemoteConfigURL},
 		{"mihomo_binary_path", cfg.MihomoBinaryPath},
 		{"mihomo_config_root", cfg.MihomoConfigRoot},
-		{"user_systemd_root", cfg.UserSystemdRoot},
 	} {
 		if r.value == "" {
 			return fmt.Errorf("%q is undefined", r.name)
