@@ -53,7 +53,6 @@ func (m *Mihoro) UpdateCore(ctx context.Context, client *http.Client, archOverri
 		return StageFailed, fmt.Errorf("mihomo binary not found at %s — run `mihoro init` first", m.BinaryPath)
 	}
 
-
 	resolved, err := bin.ResolveBinary(ctx, client, m.Config, archOverride)
 	if err != nil {
 		return StageFailed, fmt.Errorf("resolve binary: %w", err)
@@ -115,7 +114,7 @@ func (m *Mihoro) UpdateGeodata(ctx context.Context, client *http.Client, mirror 
 			URL:      geox.Geoip,
 			DestPath: m.ConfigRoot + "/geoip.dat",
 			Retries:  utils.MaxRetries,
-			Timeout:   30 * time.Second,
+			Timeout:  30 * time.Second,
 		}); err != nil {
 			return StageFailed, fmt.Errorf("download geoip.dat: %w", err)
 		}
@@ -123,7 +122,7 @@ func (m *Mihoro) UpdateGeodata(ctx context.Context, client *http.Client, mirror 
 			URL:      geox.Geosite,
 			DestPath: m.ConfigRoot + "/geosite.dat",
 			Retries:  utils.MaxRetries,
-			Timeout:   30 * time.Second,
+			Timeout:  30 * time.Second,
 		}); err != nil {
 			return StageFailed, fmt.Errorf("download geosite.dat: %w", err)
 		}
@@ -132,7 +131,7 @@ func (m *Mihoro) UpdateGeodata(ctx context.Context, client *http.Client, mirror 
 			URL:      geox.Mmdb,
 			DestPath: m.ConfigRoot + "/country.mmdb",
 			Retries:  utils.MaxRetries,
-			Timeout:   30 * time.Second,
+			Timeout:  30 * time.Second,
 		}); err != nil {
 			return StageFailed, fmt.Errorf("download country.mmdb: %w", err)
 		}

@@ -256,5 +256,3 @@ func timerNext(name string) string {
 	}
 	return after
 }
-
-

@@ -7,13 +7,13 @@ import (
 
 // --- service operations ---
 
-func Start(service string) error    { return run("start", service) }
-func Stop(service string) error     { return run("stop", service) }
-func Restart(service string) error  { return run("restart", service) }
-func Enable(service string) error   { return run("enable", service) }
-func Disable(service string) error  { return run("disable", service) }
-func DaemonReload() error           { return run("daemon-reload") }
-func ResetFailed() error            { return run("reset-failed") }
+func Start(service string) error   { return run("start", service) }
+func Stop(service string) error    { return run("stop", service) }
+func Restart(service string) error { return run("restart", service) }
+func Enable(service string) error  { return run("enable", service) }
+func Disable(service string) error { return run("disable", service) }
+func DaemonReload() error          { return run("daemon-reload") }
+func ResetFailed() error           { return run("reset-failed") }
 
 func IsActive(service string) bool  { return isCmd("is-active", "--quiet", service) }
 func IsEnabled(service string) bool { return isCmd("is-enabled", "--quiet", service) }

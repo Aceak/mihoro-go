@@ -149,7 +149,7 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 			allowLan := true
 			cfg.MihomoConfig.AllowLan = &allowLan
 		}
-		}
+	}
 
 	force := opts.Force
 	arch := opts.Arch
@@ -352,7 +352,9 @@ func (m *Mihoro) EnsureSubscription(ctx context.Context, client *http.Client) (S
 		sub.LastSize = info.Size()
 	}
 	m.Subs.Update(sub.Name, *sub)
-	m.Subs.Save()
+	if err := m.Subs.Save(); err != nil {
+		fmt.Printf("  warning: save subscription state: %v\n", err)
+	}
 
 	fmt.Println("  subscribe    Downloaded")
 	return StageInstalled, nil
@@ -409,7 +411,7 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 			DestPath: mmdbPath,
 			Label:    "  geodata    ",
 			Retries:  utils.MaxRetries,
-			Timeout:   30 * time.Second,
+			Timeout:  30 * time.Second,
 		}); err != nil {
 			return StageFailed, fmt.Errorf("download country.mmdb: %w", err)
 		}

@@ -59,8 +59,7 @@
 
 ---
 
-## [0.1.1]
-
+## [0.1.1] 内部开发版本，未公开发布。
 初始版本，[mihoro](https://github.com/spencerwooo/mihoro) Rust 项目的 Go 语言重构版本。
 
 - `init` 一键初始化（内核 + geodata + UI + systemd 服务）

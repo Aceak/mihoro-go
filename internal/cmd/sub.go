@@ -199,7 +199,9 @@ func runSubAdd(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("OK (%dKB)\n", size/1024)
 
-	_ = utils.TryDecodeBase64InPlace(destPath)
+	if err := utils.TryDecodeBase64InPlace(destPath); err != nil {
+		fmt.Printf("  warning: base64 decode: %v\n", err)
+	}
 
 	// Auto-update
 	fmt.Print("Enable auto-update? [Y/n]: ")
@@ -223,7 +225,9 @@ func runSubAdd(cmd *cobra.Command, args []string) error {
 			break
 		}
 	}
-	sf.Save()
+	if err := sf.Save(); err != nil {
+		fmt.Printf("  warning: save subscription: %v\n", err)
+	}
 
 	if sf.ActiveSubscription == "" {
 		sf.ActiveSubscription = sub.Name
@@ -412,6 +416,7 @@ func runSubUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := CliCtx()
+	var hasFailures bool
 	for _, s := range targets {
 		destPath := config.SubDownloadPath(dir, s.Name)
 
@@ -441,10 +446,13 @@ func runSubUpdate(cmd *cobra.Command, args []string) error {
 			s.LastStatus = "failed"
 			s.LastError = err.Error()
 			sf.Save()
+			hasFailures = true
 			continue
 		}
 
-		_ = utils.TryDecodeBase64InPlace(destPath)
+		if err := utils.TryDecodeBase64InPlace(destPath); err != nil {
+			fmt.Printf("  warning: base64 decode: %v\n", err)
+		}
 
 		s.LastUpdate = time.Now().Format(time.RFC3339)
 		s.LastStatus = "success"
@@ -467,6 +475,9 @@ func runSubUpdate(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	if hasFailures {
+		return fmt.Errorf("some subscriptions failed to download")
+	}
 	return nil
 }
 
@@ -485,7 +496,7 @@ func runSubUse(cmd *cobra.Command, args []string) error {
 
 	subYaml := config.SubDownloadPath(dir, name)
 
-	if _, err := os.Stat(subYaml); os.IsNotExist(err) || subUpdateForce {
+	if _, err := os.Stat(subYaml); os.IsNotExist(err) {
 		ua := s.UserAgent
 		if ua == "" {
 			ua = "clash/mihoro-go"
@@ -501,7 +512,9 @@ func runSubUse(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
-		_ = utils.TryDecodeBase64InPlace(subYaml)
+		if err := utils.TryDecodeBase64InPlace(subYaml); err != nil {
+			fmt.Printf("  warning: base64 decode: %v\n", err)
+		}
 		s.LastSize = size
 		fmt.Printf("OK (%dKB)\n", size/1024)
 	}
