@@ -445,7 +445,7 @@ func runSubUpdate(cmd *cobra.Command, args []string) error {
 			s.LastUpdate = time.Now().Format(time.RFC3339)
 			s.LastStatus = "failed"
 			s.LastError = err.Error()
-			sf.Save()
+			_ = sf.Save()
 			hasFailures = true
 			continue
 		}
@@ -457,7 +457,7 @@ func runSubUpdate(cmd *cobra.Command, args []string) error {
 		s.LastUpdate = time.Now().Format(time.RFC3339)
 		s.LastStatus = "success"
 		s.LastSize = size
-		sf.Save()
+		_ = sf.Save()
 
 		fmt.Printf("OK (%dKB)\n", size/1024)
 

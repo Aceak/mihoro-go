@@ -132,22 +132,22 @@ func downloadOnce(ctx context.Context, client *http.Client, opts DownloadOptions
 
 	written, err := io.Copy(writer, resp.Body)
 	if err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
 		return 0, fmt.Errorf("download stream: %w", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	if written == 0 {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return 0, fmt.Errorf("empty response")
 	}
 
 	if err := os.Rename(tmpPath, opts.DestPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return 0, fmt.Errorf("rename: %w", err)
 	}
 

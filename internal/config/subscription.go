@@ -84,13 +84,13 @@ func (sf *SubscriptionsFile) Save() error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpName := f.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	if err := toml.NewEncoder(f).Encode(sf); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("encode subscriptions: %w", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	if err := os.Rename(tmpName, sf.path); err != nil {
 		return fmt.Errorf("rename: %w", err)

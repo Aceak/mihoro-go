@@ -351,7 +351,9 @@ func (m *Mihoro) EnsureSubscription(ctx context.Context, client *http.Client) (S
 	if info, err := os.Stat(destPath); err == nil {
 		sub.LastSize = info.Size()
 	}
-	m.Subs.Update(sub.Name, *sub)
+	if err := m.Subs.Update(sub.Name, *sub); err != nil {
+		fmt.Printf("  warning: update subscription state: %v\n", err)
+	}
 	if err := m.Subs.Save(); err != nil {
 		fmt.Printf("  warning: save subscription state: %v\n", err)
 	}
@@ -513,7 +515,7 @@ func installUI(ctx context.Context, client *http.Client, uiCfg config.Ui, target
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	archivePath := filepath.Join(tmpDir, "ui-archive")
 
