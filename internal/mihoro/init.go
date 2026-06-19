@@ -328,7 +328,7 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureUI(_ context.Context, client *http.Client, force bool) (StageStatus, error) {
+func (m *Mihoro) EnsureUI(ctx context.Context, client *http.Client, force bool) (StageStatus, error) {
 	uiCfg := m.Config.UI
 	if uiCfg == nil {
 		return StageSkipped, nil
@@ -348,7 +348,7 @@ func (m *Mihoro) EnsureUI(_ context.Context, client *http.Client, force bool) (S
 		}
 	}
 
-	if err := ui.InstallUI(client, *uiCfg, targetDir, m.Config.MihoroUserAgent, "   "); err != nil {
+	if err := ui.InstallUI(ctx, client, *uiCfg, targetDir, m.Config.MihoroUserAgent, "   "); err != nil {
 		return StageFailed, fmt.Errorf("install ui: %w", err)
 	}
 

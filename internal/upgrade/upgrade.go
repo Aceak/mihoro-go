@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"mihoro-go/internal/utils"
 	"mihoro-go/internal/version"
 
 	"github.com/minio/selfupdate"
@@ -71,7 +72,8 @@ func RunUpgrade(ctx context.Context, client *http.Client) error {
 
 	fmt.Printf("mihoro: Downloading %s for %s...\n", latest.TagName, target)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", assetURL, nil)
+	downloadURL := utils.ResolveDownloadURL(assetURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
 		return fmt.Errorf("create download request: %w", err)
 	}
@@ -98,7 +100,6 @@ func RunUpgrade(ctx context.Context, client *http.Client) error {
 	}
 
 	fmt.Printf("mihoro: Updated to %s\n", latest.TagName)
-	fmt.Println("mihoro: Please restart for the new version to take effect")
 	return nil
 }
 

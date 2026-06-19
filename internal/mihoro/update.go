@@ -154,7 +154,7 @@ func (m *Mihoro) UpdateUI(ctx context.Context, client *http.Client) (StageStatus
 
 	targetDir := resolveExternalUIPath(m.ConfigRoot, *externalUI)
 
-	if err := ui.InstallUI(client, *uiCfg, targetDir, m.Config.MihoroUserAgent, "   "); err != nil {
+	if err := ui.InstallUI(ctx, client, *uiCfg, targetDir, m.Config.MihoroUserAgent, "   "); err != nil {
 		return StageFailed, fmt.Errorf("install ui: %w", err)
 	}
 
