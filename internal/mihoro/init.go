@@ -246,6 +246,8 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 		}
 	}
 
+	WriteVersion(mihoroDir)
+
 	if cfg.UI != nil {
 		printDashboardURLs(cfg)
 	}

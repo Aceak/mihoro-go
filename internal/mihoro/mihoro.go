@@ -8,6 +8,7 @@ import (
 
 	"mihoro-go/internal/config"
 	"mihoro-go/internal/systemctl"
+	"mihoro-go/internal/version"
 )
 
 // ANSI colors, shared across packages.
@@ -159,6 +160,8 @@ type Mihoro struct {
 
 // New creates a Mihoro by loading config from mihoroDir.
 func New(mihoroDir string) (*Mihoro, error) {
+	checkUpgrade(mihoroDir)
+
 	cfg, err := config.ParseConfig(ConfigPath(mihoroDir))
 	if err != nil {
 		return nil, err
@@ -174,6 +177,8 @@ func New(mihoroDir string) (*Mihoro, error) {
 
 // NewOrDefault loads config from mihoroDir, falling back to defaults.
 func NewOrDefault(mihoroDir string) *Mihoro {
+	checkUpgrade(mihoroDir)
+
 	cfg, err := config.Load(ConfigPath(mihoroDir))
 	if err != nil || cfg == nil {
 		c := config.DefaultConfig()
@@ -253,4 +258,45 @@ func WriteTimerUnits(mihoroDir, mihoroBin, mirror string) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// WriteVersion writes the current mihoro version to the config directory.
+func WriteVersion(mihoroDir string) {
+	_ = os.WriteFile(filepath.Join(mihoroDir, ".version"), []byte(version.Version), 0644)
+}
+
+// checkUpgrade detects version incompatibility and warns the user.
+func checkUpgrade(mihoroDir string) {
+	oldPath := filepath.Join(os.Getenv("HOME"), ".config", "mihoro.toml")
+	newCfgPath := ConfigPath(mihoroDir)
+
+	if !fileExists(oldPath) || fileExists(newCfgPath) {
+		return
+	}
+
+	fmt.Printf("%swarning:%s detected config from mihoro 0.2.2\n", Yellow, Reset)
+
+	// Try to extract old subscription URL to help user
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		return
+	}
+	oldURL := extractOldURL(string(data))
+	if oldURL != "" {
+		fmt.Printf("  Old subscription: %s\n", oldURL)
+	}
+	fmt.Printf("  Run 'mihoro sub add' first, then 'mihoro init --force' to migrate.\n")
+	fmt.Printf("  Old config: %s\n", oldPath)
+}
+
+func extractOldURL(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "remote_config_url"); ok {
+			if _, after, ok := strings.Cut(after, "="); ok {
+				return strings.Trim(strings.TrimSpace(after), "\"")
+			}
+		}
+	}
+	return ""
 }
