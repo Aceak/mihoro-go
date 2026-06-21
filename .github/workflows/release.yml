@@ -16,7 +16,6 @@ jobs:
               conclusion=$(echo "$run" | jq -r '.conclusion')
               status=$(echo "$run" | jq -r '.status')
               if [ "$conclusion" = "success" ]; then
-                echo "CI passed"
                 return 0
               elif [ "$conclusion" = "failure" ]; then
                 echo "CI failed"
@@ -36,7 +35,6 @@ jobs:
           if [ $ret -eq 0 ]; then
             echo "CI passed"
           elif [ $ret -eq 1 ]; then
-            echo "CI failed"
             exit 1
           else
             echo "CI not complete, triggering re-run..."
@@ -76,6 +74,10 @@ jobs:
           cat release-notes.md
       - name: Build
         run: make release
+      - name: Delete stale release if exists
+        run: gh release delete "${GITHUB_REF#refs/tags/}" --yes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
