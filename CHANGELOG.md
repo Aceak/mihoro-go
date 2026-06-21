@@ -4,7 +4,6 @@
 
 - `sub update` 移除文件存在跳过和 `--force`，手动更新每次都下载
 
----
 
 ## [0.3.1]
 
@@ -50,7 +49,6 @@
 - Port/SocksPort 改为 `*uint16` 防零值覆写
 - `--allow-lan`、`--mirror`、`--system`、`--yes`、`--ua`、`--subscribe` 标志移除
 
----
 
 ## [0.2.2]
 
@@ -58,7 +56,6 @@
 - upgrade 版本已最新时跳过更新
 - upgrade 超时提示
 
----
 
 ## [0.2.1]
 
@@ -68,7 +65,6 @@
 - `uninstall` 重写
 - 支持系统级 systemd
 
----
 
 ## [0.1.1] 内部开发版本，未公开发布。
 初始版本，[mihoro](https://github.com/spencerwooo/mihoro) Rust 项目的 Go 语言重构版本。
