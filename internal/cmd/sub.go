@@ -49,9 +49,8 @@ var subRemoveCmd = &cobra.Command{
 }
 
 var (
-	subUpdateAll   bool
-	subUpdateForce bool
-	subPurge       bool
+	subUpdateAll bool
+	subPurge     bool
 )
 
 var subUpdateCmd = &cobra.Command{
@@ -84,7 +83,6 @@ func init() {
 
 	subRemoveCmd.Flags().BoolVar(&subPurge, "purge", false, "Also delete downloaded files")
 	subUpdateCmd.Flags().BoolVarP(&subUpdateAll, "all", "a", false, "Update all subscriptions")
-	subUpdateCmd.Flags().BoolVarP(&subUpdateForce, "force", "f", false, "Force download even if cached")
 }
 
 func loadSubConfig() (*config.SubscriptionsFile, string, error) {
@@ -419,13 +417,6 @@ func runSubUpdate(cmd *cobra.Command, args []string) error {
 	var hasFailures bool
 	for _, s := range targets {
 		destPath := config.SubDownloadPath(dir, s.Name)
-
-		if !subUpdateForce {
-			if _, err := os.Stat(destPath); err == nil {
-				fmt.Printf("  %-12s unchanged\n", s.Name)
-				continue
-			}
-		}
 
 		ua := s.UserAgent
 		if ua == "" {

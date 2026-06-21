@@ -1,6 +1,17 @@
 # Changelog
 
+## [0.3.2]
+
+- `sub update` 移除文件存在跳过和 `--force`，手动更新每次都下载
+
+---
+
 ## [0.3.1]
+
+### 升级检测
+
+- 自动检测 0.2.2 旧配置并提示升级步骤，旧配置不删除
+- init 后写 `.version` 供未来版本判断兼容性
 
 ### 多订阅管理
 
@@ -36,8 +47,8 @@
 
 - 下载器统一 `Download(ctx, DownloadOptions)`，支持代理、Headers、超时、原子写入
 - 全局 Ctrl+C 退出
-- `--allow-lan`、`--mirror`、`--system`、`--yes`、`--ua`、`--subscribe` 标志移除
 - Port/SocksPort 改为 `*uint16` 防零值覆写
+- `--allow-lan`、`--mirror`、`--system`、`--yes`、`--ua`、`--subscribe` 标志移除
 
 ---
 
