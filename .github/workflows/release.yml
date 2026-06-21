@@ -10,20 +10,47 @@ jobs:
     steps:
       - name: Wait for CI
         run: |
-          for i in $(seq 1 30); do
-            conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA" --jq '.workflow_runs[] | select(.name=="CI") | .conclusion')
-            if [ "$conclusion" = "success" ]; then
-              echo "CI passed"
-              exit 0
-            elif [ "$conclusion" = "failure" ]; then
-              echo "CI failed"
+          wait_ci() {
+            for i in $(seq 1 30); do
+              run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA" --jq '.workflow_runs[] | select(.name=="CI")')
+              conclusion=$(echo "$run" | jq -r '.conclusion')
+              status=$(echo "$run" | jq -r '.status')
+              if [ "$conclusion" = "success" ]; then
+                echo "CI passed"
+                return 0
+              elif [ "$conclusion" = "failure" ]; then
+                echo "CI failed"
+                return 1
+              elif [ "$status" = "in_progress" ] || [ "$status" = "queued" ]; then
+                echo "Waiting for CI... ($i/30)"
+                sleep 5
+              else
+                echo "CI not started yet... ($i/30)"
+                sleep 5
+              fi
+            done
+            return 2
+          }
+          wait_ci
+          ret=$?
+          if [ $ret -eq 0 ]; then
+            echo "CI passed"
+          elif [ $ret -eq 1 ]; then
+            echo "CI failed"
+            exit 1
+          else
+            echo "CI not complete, triggering re-run..."
+            gh workflow run CI --ref main
+            sleep 10
+            wait_ci
+            ret=$?
+            if [ $ret -eq 0 ]; then
+              echo "CI passed on retry"
+            else
+              echo "CI did not complete in time"
               exit 1
             fi
-            echo "Waiting for CI... ($i/30)"
-            sleep 10
-          done
-          echo "CI did not complete in time"
-          exit 1
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
