@@ -10,7 +10,7 @@
 curl -fsSL https://raw.githubusercontent.com/aceak/mihoro-go/main/install.sh | sh
 
 # 使用镜像
-curl -fsSL https://raw.githubusercontent.com/aceak/mihoro-go/main/install.sh | sh -s -- --mirror "https://ghfast.top"
+curl -fsSL https://raw.githubusercontent.com/aceak/mihoro-go/main/install.sh | sh -s -- --mirror https://ghfast.top
 ```
 
 或从 [Releases](https://github.com/aceak/mihoro-go/releases) 下载二进制。
