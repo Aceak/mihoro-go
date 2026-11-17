@@ -35,7 +35,7 @@ type GeoxUrl struct {
 	Mmdb    string `yaml:"mmdb" toml:"mmdb"`
 }
 
-// MihomoConfig — [mihomo_config] section in mihoro.toml.
+// MihomoConfig — [mihomo_config] section in config.toml.
 // Used to override fields in the remote config.yaml on every apply.
 type MihomoConfig struct {
 	Port               *uint16  `toml:"port,omitempty"`
@@ -61,7 +61,7 @@ func DefaultMihomoConfig() MihomoConfig {
 	allowLan := false
 	bindAddr := "*"
 	ipv6 := true
-	extController := "0.0.0.0:9090"
+	extController := "127.0.0.1:9090"
 	extUI := "ui"
 	geodataMode := false
 	geoAutoUpdate := true

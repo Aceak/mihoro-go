@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,9 +19,13 @@ import (
 
 // InitOptions holds the flags for `mihoro init`.
 type InitOptions struct {
-	Force    bool
-	Arch     string
-	AllowLan bool
+	Force           bool
+	Arch            string
+	AllowLan        bool
+	DashboardLan    bool   // expose the API/dashboard on 0.0.0.0
+	DashboardLanSet bool   // whether --dashboard-lan was given on the command line
+	NoSecret        bool   // do not create an API secret when none exists
+	Proxy           string // proxy to persist into config.toml (may be empty)
 }
 
 func bootstrapConfig(mihoroDir string) (*config.Config, *config.SubscriptionsFile, error) {
@@ -79,44 +82,69 @@ func loadOrCreateConfig(mihoroDir string) (*config.Config, *config.Subscriptions
 	return cfg, sf, nil
 }
 
-func promptBool(question, defaultValue string) bool {
-	var def string
+// prompter reads interactive answers from one shared buffered reader so that
+// piped input (several lines written at once) is consumed in order.
+type prompter struct {
+	in *bufio.Reader
+}
+
+// newPrompter creates a prompter reading from stdin.
+func newPrompter() *prompter {
+	return &prompter{in: bufio.NewReader(os.Stdin)}
+}
+
+// Bool asks a yes/no question, returning defaultValue on empty input or EOF.
+func (p *prompter) Bool(question, defaultValue string) bool {
+	def := "y/N"
 	if strings.EqualFold(defaultValue, "y") {
 		def = "Y/n"
-	} else {
-		def = "y/N"
 	}
 	fmt.Printf("%s [%s]: ", question, def)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return strings.EqualFold(defaultValue, "y")
-	}
-	val := strings.TrimSpace(scanner.Text())
-	if val == "" {
+	val, ok := p.read()
+	if !ok || val == "" {
 		return strings.EqualFold(defaultValue, "y")
 	}
 	return strings.EqualFold(val, "y") || strings.EqualFold(val, "yes")
 }
 
-func promptString(question, defaultValue string) string {
+// String asks for a value, returning defaultValue on empty input or EOF.
+func (p *prompter) String(question, defaultValue string) string {
 	if defaultValue != "" {
 		fmt.Printf("%s [%s]: ", question, defaultValue)
 	} else {
 		fmt.Printf("%s: ", question)
 	}
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return defaultValue
-	}
-	val := strings.TrimSpace(scanner.Text())
-	if val == "" {
+
+	val, ok := p.read()
+	if !ok || val == "" {
 		return defaultValue
 	}
 	return val
 }
 
-func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts InitOptions, mirrorFlag string) error {
+// Line asks for a raw value without a default, keeping leading and trailing
+// spaces (only the trailing newline is removed). ok=false means stdin was
+// closed (EOF) before any input was read.
+func (p *prompter) Line(question string) (string, bool) {
+	fmt.Printf("%s: ", question)
+	line, err := p.in.ReadString('\n')
+	if err != nil && line == "" {
+		return "", false
+	}
+	return strings.TrimRight(line, "\r\n"), true
+}
+
+// read returns the next trimmed input line.
+func (p *prompter) read() (string, bool) {
+	line, err := p.in.ReadString('\n')
+	if err != nil && line == "" {
+		return "", false
+	}
+	return strings.TrimSpace(line), true
+}
+
+func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts InitOptions, mirrorFlag string) (err error) {
 	mihoroDir = ExpandTilde(mihoroDir)
 	mirror := mirrorFlag
 
@@ -127,6 +155,8 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 		return err
 	}
 
+	p := newPrompter()
+
 	if opts.AllowLan {
 		allowLan := true
 		cfg.MihomoConfig.AllowLan = &allowLan
@@ -136,6 +166,17 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 
 	if !opts.Force && len(sf.Subscriptions) > 0 && sf.Active() != nil && m.binaryUsable() {
 		fmt.Printf("%sAlready initialized.%s Use --force to reconfigure.\n", Green, Reset)
+		if opts.AllowLan || opts.DashboardLanSet || opts.NoSecret {
+			fmt.Println("Note: --allow-lan, --dashboard-lan and --no-secret only take effect together with --force here.")
+		}
+		// A proxy is a download setting rather than a component setting, so
+		// persist it even when no reinstall is performed.
+		if opts.Proxy != "" && cfg.Proxy != opts.Proxy {
+			cfg.Proxy = opts.Proxy
+			if err := cfg.Save(ConfigPath(mihoroDir)); err != nil {
+				fmt.Printf("  %swarning:%s save proxy: %v\n", Yellow, Reset, err)
+			}
+		}
 		return nil
 	}
 
@@ -143,13 +184,67 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 		mirror = cfg.GitHubMirror
 	}
 
+	// Normalize and export the mirror so every download in this run goes
+	// through it; quoted or trailing-slash inputs are cleaned up here.
+	mirror, err = utils.SetMirrorEnv(mirror)
+	if err != nil {
+		return fmt.Errorf("--mirror: %w", err)
+	}
+
 	alreadyLan := cfg.MihomoConfig.AllowLan != nil && *cfg.MihomoConfig.AllowLan
 	if !opts.AllowLan && !alreadyLan {
-		if promptBool("Allow LAN access?", "N") {
+		if p.Bool("Allow LAN access?", "N") {
 			allowLan := true
 			cfg.MihomoConfig.AllowLan = &allowLan
 		}
 	}
+
+	// Dashboard/API binding: decide before the config is written so the
+	// first config.yaml render already carries it.
+	exposeLan := opts.DashboardLan
+	if !opts.DashboardLanSet {
+		current := ""
+		if cfg.MihomoConfig.ExternalController != nil {
+			current = *cfg.MihomoConfig.ExternalController
+		}
+		host, _ := parseControllerAddress(current)
+		def := "N"
+		if current != "" && isWildcardHost(host) {
+			def = "Y" // keep an existing LAN exposure
+		}
+		exposeLan = p.Bool("Expose the API/dashboard to the LAN (0.0.0.0)?", def)
+	}
+	controller := dashboardController(cfg.MihomoConfig.ExternalController, exposeLan)
+	cfg.MihomoConfig.ExternalController = &controller
+
+	// API secret: keep an existing value, generate one on a fresh install.
+	secret, source, err := promptSecret(p, cfg.MihomoConfig.Secret, opts.NoSecret, !fileExists(m.MihomoCfg))
+	if err != nil {
+		return err
+	}
+	cfg.MihomoConfig.Secret = secret
+
+	if opts.Proxy != "" {
+		cfg.Proxy = opts.Proxy
+	}
+
+	// Persist immediately (hard error) so config.toml and config.yaml cannot
+	// diverge if a later download step fails.
+	if err := cfg.Save(ConfigPath(mihoroDir)); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	var generatedSecret string
+	if source == secretGenerated {
+		generatedSecret = *secret
+	}
+	defer func() {
+		// Even when a later stage fails, the generated secret is already
+		// persisted - surface it once so the user is not locked out.
+		if err != nil && generatedSecret != "" {
+			fmt.Printf("\n%sNote:%s init did not complete, but the API secret is already saved.\n", Yellow, Reset)
+			printSecretOnce(generatedSecret)
+		}
+	}()
 
 	force := opts.Force
 	arch := opts.Arch
@@ -166,7 +261,7 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 	} else {
 		fmt.Println("Downloading components...")
 	}
-	binaryPlan, err := m.PrepareBinary(ctx, client, force, arch, mirror)
+	binaryPlan, err := m.PrepareBinary(ctx, client, force, arch)
 	if err != nil {
 		return err
 	}
@@ -174,14 +269,14 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 		return ctx.Err()
 	}
 
-	if _, err := m.EnsureGeodata(ctx, client, force, mirror); err != nil {
+	if _, err := m.EnsureGeodata(ctx, client, force); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	if _, err := m.EnsureUI(ctx, client, force, mirror); err != nil {
+	if _, err := m.EnsureUI(ctx, client, force); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -197,20 +292,25 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 			fmt.Printf("  mirror: %s\n", cfg.GitHubMirror)
 		}
 	} else {
-		if promptBool("Enable component auto-update? (weekly, Mon 01:00)", "Y") {
+		if p.Bool("Enable component auto-update? (weekly, Mon 01:00)", "Y") {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			installTimers = true
 			if mirrorFlag != "" {
-				cfg.GitHubMirror = mirrorFlag
+				cfg.GitHubMirror = mirror
 			} else {
-				mirrorURL := promptString("Mirror URL (optional, leave empty to skip)", "")
+				mirrorURL := p.String("Mirror URL (optional, leave empty to skip)", "")
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
 				if mirrorURL != "" {
-					cfg.GitHubMirror = mirrorURL
+					norm, nerr := utils.NormalizeMirror(mirrorURL)
+					if nerr != nil {
+						fmt.Printf("  %swarning:%s invalid mirror: %v\n", Yellow, Reset, nerr)
+					} else {
+						cfg.GitHubMirror = norm
+					}
 				}
 			}
 		}
@@ -251,13 +351,19 @@ func RunInit(ctx context.Context, client *http.Client, mihoroDir string, opts In
 	if cfg.UI != nil {
 		printDashboardURLs(cfg)
 	}
+	printAccessNotice(cfg)
 	if opts.AllowLan || (cfg.MihomoConfig.AllowLan != nil && *cfg.MihomoConfig.AllowLan) {
 		printLanProxyInfo(cfg)
+	}
+	if generatedSecret != "" {
+		printSecretOnce(generatedSecret)
+	} else if source == secretInput {
+		fmt.Println("API secret: set")
 	}
 	return nil
 }
 
-func (m *Mihoro) PrepareBinary(ctx context.Context, client *http.Client, force bool, archOverride string, mirror string) (BinaryPlan, error) {
+func (m *Mihoro) PrepareBinary(ctx context.Context, client *http.Client, force bool, archOverride string) (BinaryPlan, error) {
 	if !force && m.binaryUsable() {
 		fmt.Printf("  mihomo core %sAlready present%s\n", Green, Reset)
 		return BinaryPlan{SkipReason: "binary exists"}, nil
@@ -280,6 +386,8 @@ func (m *Mihoro) PrepareBinary(ctx context.Context, client *http.Client, force b
 		DestPath: tmpPath,
 		Label:    "  mihomo core",
 		Retries:  utils.MaxRetries,
+		Timeout:  5 * time.Minute,
+		Validate: validateGzipFile,
 	}); err != nil {
 		_ = os.Remove(tmpPath)
 		return BinaryPlan{}, fmt.Errorf("download binary: %w\n  (Hint: use --mirror <url> to download via a github mirror)", err)
@@ -364,7 +472,7 @@ func (m *Mihoro) EnsureSubscription(ctx context.Context, client *http.Client) (S
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force bool, mirror string) (StageStatus, error) {
+func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force bool) (StageStatus, error) {
 	geox := m.Config.MihomoConfig.GeoxUrl
 	if geox == nil {
 		return StageSkipped, nil
@@ -390,6 +498,8 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 				DestPath: geoipPath,
 				Label:    "  geodata    ",
 				Retries:  utils.MaxRetries,
+				Timeout:  5 * time.Minute,
+				Validate: validateGeodataFile,
 			}); err != nil {
 				return StageFailed, fmt.Errorf("download geoip.dat: %w", err)
 			}
@@ -400,6 +510,8 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 				DestPath: geositePath,
 				Label:    "  geodata    ",
 				Retries:  utils.MaxRetries,
+				Timeout:  5 * time.Minute,
+				Validate: validateGeodataFile,
 			}); err != nil {
 				return StageFailed, fmt.Errorf("download geosite.dat: %w", err)
 			}
@@ -415,7 +527,8 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 			DestPath: mmdbPath,
 			Label:    "  geodata    ",
 			Retries:  utils.MaxRetries,
-			Timeout:  30 * time.Second,
+			Timeout:  5 * time.Minute,
+			Validate: validateGeodataFile,
 		}); err != nil {
 			return StageFailed, fmt.Errorf("download country.mmdb: %w", err)
 		}
@@ -424,7 +537,7 @@ func (m *Mihoro) EnsureGeodata(ctx context.Context, client *http.Client, force b
 	return StageInstalled, nil
 }
 
-func (m *Mihoro) EnsureUI(ctx context.Context, client *http.Client, force bool, mirror string) (StageStatus, error) {
+func (m *Mihoro) EnsureUI(ctx context.Context, client *http.Client, force bool) (StageStatus, error) {
 	uiCfg := m.Config.UI
 	if uiCfg == nil {
 		return StageSkipped, nil
@@ -526,6 +639,8 @@ func installUI(ctx context.Context, client *http.Client, uiCfg config.Ui, target
 		DestPath: archivePath,
 		Label:    "  web ui     ",
 		Retries:  utils.MaxRetries,
+		Timeout:  5 * time.Minute,
+		Validate: validateUIArchive(url),
 	}); err != nil {
 		return err
 	}
@@ -535,16 +650,8 @@ func installUI(ctx context.Context, client *http.Client, uiCfg config.Ui, target
 		return err
 	}
 
-	if strings.HasSuffix(url, ".tar.gz") || strings.HasSuffix(url, ".tgz") {
-		cmd := exec.Command("tar", "-xzf", archivePath, "-C", extractDir)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("extract tar: %w\n%s", err, string(out))
-		}
-	} else {
-		cmd := exec.Command("unzip", "-qo", archivePath, "-d", extractDir)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("extract zip: %w\n%s", err, string(out))
-		}
+	if err := extractUIArchive(archivePath, extractDir, url); err != nil {
+		return err
 	}
 
 	entries, _ := os.ReadDir(extractDir)

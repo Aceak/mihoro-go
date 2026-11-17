@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,13 +33,24 @@ type DownloadOptions struct {
 	Label     string            // progress bar label, empty = no progress bar
 	Retries   int               // extra retries, 0 = no retry
 	Timeout   time.Duration     // HTTP client timeout, 0 = default 30s
+	// Validate is an optional content check run on the temp file before it is
+	// renamed into place. A validation failure is not retried against the same
+	// URL, so the mirror fallback can take over immediately.
+	Validate func(path string) error
 }
+
+// ErrValidation marks a content validation failure.
+var ErrValidation = errors.New("download validation failed")
 
 func defaultUA() string {
 	return "mihoro-go/" + version.Version
 }
 
 // Download downloads a file to DestPath (atomic write).
+//
+// When a GitHub mirror is configured, the mirrored URL is tried first. If it
+// fails, the original URL is tried as a fallback so a dead mirror does not
+// block updates.
 func Download(ctx context.Context, client *http.Client, opts DownloadOptions) (size int64, err error) {
 	if opts.UserAgent == "" {
 		opts.UserAgent = defaultUA()
@@ -51,23 +63,22 @@ func Download(ctx context.Context, client *http.Client, opts DownloadOptions) (s
 		bar = NewProgressBar(opts.Label, 0)
 	}
 
+	urls := []string{ResolveDownloadURL(opts.URL)}
+	if urls[0] != opts.URL {
+		urls = append(urls, opts.URL)
+	}
+
 	var lastErr error
-	for attempt := 0; attempt <= opts.Retries; attempt++ {
-		if attempt > 0 {
-			delay := RetryStrategy(opts.Retries)[attempt-1]
+	for i, u := range urls {
+		if i > 0 {
 			if bar != nil {
-				bar.SetStatus(fmt.Sprintf("retry %d/%d", attempt, opts.Retries))
-			}
-			select {
-			case <-ctx.Done():
-				if bar != nil {
-					bar.Canceled()
-				}
-				return 0, ctx.Err()
-			case <-time.After(delay):
+				bar.Reset()
+				bar.SetStatus("mirror failed, trying direct")
+			} else {
+				fmt.Fprintln(os.Stderr, "mirror download failed, trying direct URL")
 			}
 		}
-		n, err := downloadOnce(ctx, httpClient, opts, bar)
+		n, err := downloadWithRetries(ctx, httpClient, opts, u, bar)
 		if err == nil {
 			return n, nil
 		}
@@ -82,12 +93,50 @@ func Download(ctx context.Context, client *http.Client, opts DownloadOptions) (s
 	if bar != nil {
 		bar.Failed()
 	}
+	if len(urls) > 1 {
+		return 0, fmt.Errorf("download failed (mirror and direct): %v", lastErr)
+	}
 	return 0, fmt.Errorf("download failed after %d attempts: %v", opts.Retries+1, lastErr)
 }
 
-func downloadOnce(ctx context.Context, client *http.Client, opts DownloadOptions, bar *ProgressBar) (int64, error) {
-	resolvedURL := ResolveDownloadURL(opts.URL)
+// downloadWithRetries downloads from a single URL, retrying with backoff.
+func downloadWithRetries(ctx context.Context, client *http.Client, opts DownloadOptions, url string,
+	bar *ProgressBar) (int64, error) {
+	var lastErr error
+	for attempt := 0; attempt <= opts.Retries; attempt++ {
+		if attempt > 0 {
+			delay := RetryStrategy(opts.Retries)[attempt-1]
+			if bar != nil {
+				bar.SetStatus(fmt.Sprintf("retry %d/%d", attempt, opts.Retries))
+			}
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(delay):
+			}
+			if bar != nil {
+				bar.Reset()
+				bar.SetStatus(fmt.Sprintf("retry %d/%d", attempt, opts.Retries))
+			}
+		}
+		n, err := downloadOnce(ctx, client, opts, url, bar)
+		if err == nil {
+			return n, nil
+		}
+		if errors.Is(err, ErrValidation) {
+			// The content is wrong regardless of how often it is retried.
+			return 0, err
+		}
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		lastErr = err
+	}
+	return 0, lastErr
+}
 
+func downloadOnce(ctx context.Context, client *http.Client, opts DownloadOptions, resolvedURL string,
+	bar *ProgressBar) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(opts.DestPath), 0755); err != nil {
 		return 0, fmt.Errorf("create parent dir: %w", err)
 	}
@@ -146,6 +195,13 @@ func downloadOnce(ctx context.Context, client *http.Client, opts DownloadOptions
 		return 0, fmt.Errorf("empty response")
 	}
 
+	if opts.Validate != nil {
+		if err := opts.Validate(tmpPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return 0, fmt.Errorf("%w: %v", ErrValidation, err)
+		}
+	}
+
 	if err := os.Rename(tmpPath, opts.DestPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return 0, fmt.Errorf("rename: %w", err)
@@ -172,11 +228,11 @@ func RetryStrategy(maxRetries int) []time.Duration {
 // --- Mirror support ---
 
 func githubMirrorBase() string {
-	mirror := strings.TrimRight(os.Getenv(GithubMirrorEnv), "/")
-	if mirror == "" {
-		return ""
-	}
-	return mirror
+	// Tolerate manually exported values: strip whitespace, quotes and
+	// trailing slashes so URL concatenation always yields a single "/".
+	mirror := strings.TrimSpace(os.Getenv(GithubMirrorEnv))
+	mirror = strings.Trim(mirror, `"'`)
+	return strings.TrimRight(mirror, "/")
 }
 
 func isGitHubDownloadHost(host string) bool {
@@ -210,28 +266,32 @@ func extractHost(rawURL string) string {
 	return s
 }
 
-// getClient returns an HTTP client, optionally with proxy.
+// getClient returns a copy of client with the requested timeout and proxy.
+// It never mutates the shared client, so a caller-provided Timeout is honored
+// even when the client is shared (previously it was ignored).
 func getClient(client *http.Client, proxyURL string, timeout time.Duration) *http.Client {
-	if timeout == 0 {
-		timeout = 10 * time.Second
+	var c http.Client
+	if client != nil {
+		c = *client
 	}
-	if proxyURL == "" {
-		if client == nil {
-			return &http.Client{Timeout: timeout}
+	if timeout > 0 {
+		c.Timeout = timeout
+	} else if client == nil {
+		c.Timeout = 10 * time.Second
+	}
+	if proxyURL != "" {
+		if pu, err := url.Parse(proxyURL); err == nil {
+			var tr *http.Transport
+			if existing, ok := c.Transport.(*http.Transport); ok {
+				tr = existing.Clone()
+			} else if base, ok := http.DefaultTransport.(*http.Transport); ok {
+				tr = base.Clone()
+			}
+			if tr != nil {
+				tr.Proxy = http.ProxyURL(pu)
+				c.Transport = tr
+			}
 		}
-		return client
 	}
-	pu, err := url.Parse(proxyURL)
-	if err != nil {
-		if client == nil {
-			return &http.Client{Timeout: timeout}
-		}
-		return client
-	}
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(pu),
-		},
-	}
+	return &c
 }

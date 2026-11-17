@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.3.4]
+
+### 更新
+
+- `init` / `update` / `upgrade` 新增 `--proxy`（http/https/socks5/socks5h），`config.toml` 新增 `proxy` 字段；`init --proxy` 会自动持久化
+- 组件下载优先走镜像，镜像失败自动回退 GitHub 直连（直连同样走配置的代理）
+- `update` 改为两阶段：所有组件先下载并校验，全部成功后才替换文件；任一失败不改动现有安装
+- 服务在全部替换完成后只重启一次；仅更新 UI 时不重启
+- core 已是最新版本时跳过下载；`--arch` 会强制重装
+- geodata 使用 GitHub API 中 release asset 的 SHA-256 与本地文件比对，未变化时跳过下载
+- UI 使用 GitHub release tag 比对（metacubexd / zashboard），未变化时跳过下载；yacd-meta 与 custom UI 仍每次下载
+- 版本检查直连 GitHub API（可走代理，不经过镜像）；检查失败时警告并回退为正常下载
+- 下载内容校验（core gzip、UI 归档、geodata 文件），镜像返回 HTML 错误页时自动回退直连
+- 镜像 URL 拒绝空白字符，避免写入 systemd unit 时被拆成多个参数
+- 修复传入共享 HTTP client 时下载超时设置被忽略的问题
+- 修复镜像地址被写进 `geox_url` 时无法识别为默认 geodata 源的问题
+- 修复进度条在重试/回退时可能因进度超过总量而崩溃的问题
+
+## [0.3.3]
+
+### 安全
+
+- 默认生成随机 API 密码（secret）写入 mihomo 配置，面板/API 需认证；密码仅在生成时显示一次
+- `init` 中途失败时仍会显示已生成的密码，避免被锁在面板外
+- 手动输入的密码含空格时明确报错，不再静默裁剪首尾空白
+- 面板/API 默认监听 `127.0.0.1:9090`（原 `0.0.0.0:9090`），`init --dashboard-lan` 开放到局域网
+- 新增 `mihoro secret reset`（别名 `rotate`）重置密码，`--disable` 关闭认证
+- 新增 `init --dashboard-lan` / `init --no-secret` 标志
+- `config.toml`、`config.yaml` 权限收紧为 `0600`
+- 修复管道多行输入时交互提示被吞的问题（init 与 `sub add` 均覆盖）
+
+### 修复
+
+- `--mirror` 现在会在 `update` / `upgrade` 时读取配置文件中保存的镜像（此前只有命令行显式传参才生效）
+- 镜像参数统一校验与规范化：引号、结尾斜杠自动去除，缺 `http(s)://` 前缀时给出明确报错；`install.sh` 同步处理
+- 订阅 URL、代理地址输入做相同规范化：引号自动去除，缺 `http(s)://` 前缀时明确报错并重新询问
+
+### 其他
+
+- `status` 面板显示密码状态（仅状态，不显示值）
+- 已有配置不受影响，不自动迁移
+
 ## [0.3.2]
 
 - `sub update` 移除文件存在跳过和 `--force`，手动更新每次都下载

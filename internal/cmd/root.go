@@ -117,4 +117,5 @@ func init() {
 	rootCmd.AddCommand(completionCmd)
 	rootCmd.AddCommand(subCmd)
 	rootCmd.AddCommand(upgradeCmd)
+	rootCmd.AddCommand(secretCmd)
 }

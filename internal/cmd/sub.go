@@ -135,6 +135,12 @@ func runSubAdd(cmd *cobra.Command, args []string) error {
 			fmt.Println("  URL is required.")
 			continue
 		}
+		cleaned, err := utils.NormalizeURLInput(sub.URL)
+		if err != nil {
+			fmt.Printf("  %v\n", err)
+			continue
+		}
+		sub.URL = cleaned
 		break
 	}
 
@@ -153,20 +159,25 @@ func runSubAdd(cmd *cobra.Command, args []string) error {
 
 		// Ask proxy/headers for retry — only retry if user provides something
 		sub.Proxy = prompt("Proxy URL (leave empty to skip)", "")
+		if sub.Proxy != "" {
+			cleaned, perr := utils.NormalizeURLInput(sub.Proxy)
+			if perr != nil {
+				fmt.Printf("  %v (proxy ignored)\n", perr)
+				sub.Proxy = ""
+			} else {
+				sub.Proxy = cleaned
+			}
+		}
 		if sub.Proxy == "" {
 			fmt.Print("Add custom headers? [y/N]: ")
-			hs := bufio.NewScanner(os.Stdin)
-			hs.Scan()
-			if strings.EqualFold(strings.TrimSpace(hs.Text()), "y") {
+			answer, _ := readSubLine()
+			if strings.EqualFold(answer, "y") {
 				fmt.Println("Headers (key=value, empty line to finish):")
 				sub.Headers = make(map[string]string)
 				for {
 					fmt.Print("  ")
-					if !hs.Scan() {
-						break
-					}
-					line := strings.TrimSpace(hs.Text())
-					if line == "" {
+					line, ok := readSubLine()
+					if !ok || line == "" {
 						break
 					}
 					if k, v, ok := parseKeyValue(line); ok {
@@ -203,9 +214,7 @@ func runSubAdd(cmd *cobra.Command, args []string) error {
 
 	// Auto-update
 	fmt.Print("Enable auto-update? [Y/n]: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Scan()
-	autoStr := strings.TrimSpace(scanner.Text())
+	autoStr, _ := readSubLine()
 	sub.AutoUpdate = autoStr == "" || strings.EqualFold(autoStr, "y") || strings.EqualFold(autoStr, "yes")
 
 	// Save
@@ -549,17 +558,31 @@ func runSubCurrent(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// subStdin is shared across all prompts in this file so piped multi-line
+// input is consumed line by line instead of being swallowed by a fresh
+// buffered reader per prompt.
+var subStdin = bufio.NewReader(os.Stdin)
+
+// readSubLine reads one trimmed input line. ok=false means stdin was closed
+// (EOF) before any input was read.
+func readSubLine() (string, bool) {
+	line, err := subStdin.ReadString('\n')
+	if err != nil && line == "" {
+		return "", false
+	}
+	return strings.TrimSpace(line), true
+}
+
 func prompt(label string, current string) string {
 	if current != "" {
 		fmt.Printf("%s [%s]: ", label, current)
 	} else {
 		fmt.Printf("%s: ", label)
 	}
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
+	input, ok := readSubLine()
+	if !ok {
 		os.Exit(1)
 	}
-	input := strings.TrimSpace(scanner.Text())
 	if input == "" {
 		return current
 	}

@@ -339,6 +339,117 @@ func TestGeoxUrlDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultMihomoConfigSecure(t *testing.T) {
+	cfg := DefaultMihomoConfig()
+	if cfg.ExternalController == nil || *cfg.ExternalController != "127.0.0.1:9090" {
+		t.Errorf("default external controller = %v, want 127.0.0.1:9090", cfg.ExternalController)
+	}
+	if cfg.Secret != nil {
+		t.Errorf("default secret = %v, want nil", *cfg.Secret)
+	}
+}
+
+func TestSaveFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.toml")
+
+	cfg := DefaultConfig()
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	assertPrivatePerm(t, path)
+
+	// A pre-existing world-readable file must be replaced with mode 0600.
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	assertPrivatePerm(t, path)
+}
+
+func TestApplyOverridePermissions(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "config.yaml")
+
+	override := DefaultMihomoConfig()
+	rawYaml, err := yaml.Marshal(mihomoYamlFrom(&override))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(yamlPath, rawYaml, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unchanged content still goes through the chmod path.
+	changed, err := ApplyOverride(yamlPath, &override)
+	if err != nil {
+		t.Fatalf("ApplyOverride() = %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false for already-matching YAML")
+	}
+	assertPrivatePerm(t, yamlPath)
+
+	// Changed content path.
+	if err := os.Chmod(yamlPath, 0644); err != nil {
+		t.Fatal(err)
+	}
+	override.Port = ptr(uint16(9999))
+	changed, err = ApplyOverride(yamlPath, &override)
+	if err != nil {
+		t.Fatalf("ApplyOverride() = %v", err)
+	}
+	if !changed {
+		t.Error("expected changed=true after modifying port")
+	}
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strContains(string(data), "port: 9999") {
+		t.Error("override changes were not written to the file")
+	}
+	assertPrivatePerm(t, yamlPath)
+}
+
+// mihomoYamlFrom mirrors override fields onto a YAML struct the same way
+// ApplyOverride does, for building "already matching" fixtures.
+func mihomoYamlFrom(override *MihomoConfig) *MihomoYamlConfig {
+	var yml MihomoYamlConfig
+	yml.Port = ptrIntIfNotNil(override.Port)
+	yml.SocksPort = ptrIntIfNotNil(override.SocksPort)
+	yml.MixedPort = ptrIntIfNotNil(override.MixedPort)
+	yml.RedirPort = ptrIntIfNotNil(override.RedirPort)
+	yml.AllowLan = override.AllowLan
+	yml.BindAddress = override.BindAddress
+	mode := override.Mode
+	yml.Mode = &mode
+	logLevel := override.LogLevel
+	yml.LogLevel = &logLevel
+	yml.IPv6 = override.IPv6
+	yml.ExternalController = override.ExternalController
+	yml.ExternalUI = override.ExternalUI
+	yml.Secret = override.Secret
+	yml.GeodataMode = override.GeodataMode
+	yml.GeoAutoUpdate = override.GeoAutoUpdate
+	yml.GeoUpdateInterval = override.GeoUpdateInterval
+	yml.GeoxUrl = override.GeoxUrl
+	return &yml
+}
+
+func assertPrivatePerm(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("%s permissions = %o, want 600", path, perm)
+	}
+}
+
 func strContains(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {

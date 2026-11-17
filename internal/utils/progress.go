@@ -47,6 +47,9 @@ func (b *ProgressBar) redraw() {
 	var frac float64
 	if b.total > 0 {
 		frac = float64(b.current) / float64(b.total)
+		if frac > 1 {
+			frac = 1
+		}
 	}
 	done := int(frac * barWidth)
 	bar := strings.Repeat("=", done) + strings.Repeat(" ", barWidth-done)
@@ -69,6 +72,16 @@ func (b *ProgressBar) redraw() {
 	}
 
 	fmt.Fprintf(os.Stderr, "\r%s |%s| %s\033[K", b.label, bar, right)
+}
+
+// Reset clears the progress and timer so a fresh attempt starts at zero.
+// It is used when retrying or falling back to a direct download.
+func (b *ProgressBar) Reset() {
+	b.current = 0
+	b.total = 0
+	b.start = time.Now()
+	b.lastRedraw = time.Now()
+	b.status = ""
 }
 
 // SetTotal updates the total size (called when Content-Length becomes known).
@@ -102,10 +115,7 @@ func (b *ProgressBar) currentBar() string {
 	if b.total <= 0 {
 		return strings.Repeat(" ", barWidth)
 	}
-	done := int(float64(b.current) / float64(b.total) * barWidth)
-	if done > barWidth {
-		done = barWidth
-	}
+	done := min(int(float64(b.current)/float64(b.total)*barWidth), barWidth)
 	s := strings.Repeat("=", done)
 	if done < barWidth {
 		s += ">"

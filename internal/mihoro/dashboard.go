@@ -38,13 +38,51 @@ func printDashboardURLs(cfg *config.Config) {
 	if cfg.UI != nil {
 		uiName = cfg.UI.AsConfigValue()
 	}
-	fmt.Printf("Using %s - change via the `ui` field in mihoro.toml\n", uiName)
+	fmt.Printf("Using %s - change via the `ui` field in config.toml\n", uiName)
+}
+
+// printAccessNotice reports how the API/dashboard can be reached and whether
+// authentication is enabled. It must never print the secret value.
+func printAccessNotice(cfg *config.Config) {
+	for _, line := range accessNoticeLines(cfg) {
+		if strings.HasPrefix(line, "warning:") {
+			fmt.Printf("%s%s%s\n", Yellow, line, Reset)
+			continue
+		}
+		fmt.Println(line)
+	}
+}
+
+// accessNoticeLines builds the API access notice for the given config.
+// The lines must never contain the secret value.
+func accessNoticeLines(cfg *config.Config) []string {
+	controller := ""
+	if cfg.MihomoConfig.ExternalController != nil {
+		controller = *cfg.MihomoConfig.ExternalController
+	}
+	host, _ := parseControllerAddress(controller)
+
+	var lines []string
+	switch {
+	case controller == "":
+		lines = append(lines, "API access: not configured")
+	case host == "":
+		lines = append(lines, "API access: "+controller)
+	case isWildcardHost(host):
+		lines = append(lines, "API access: all interfaces (reachable from the LAN)")
+	case isLoopbackHost(host):
+		lines = append(lines, "API access: local only ("+strings.Trim(host, "[]")+")")
+		lines = append(lines, "To expose the dashboard on your LAN: mihoro init --force --dashboard-lan")
+	default:
+		lines = append(lines, "API access: "+controller)
+	}
 
 	if cfg.MihomoConfig.Secret != nil && *cfg.MihomoConfig.Secret != "" {
-		fmt.Println("Authentication required (secret is set in mihoro.toml)")
+		lines = append(lines, "API secret: required (change with `mihoro secret reset`)")
 	} else {
-		fmt.Println("Set `mihomo_config.secret` in mihoro.toml to require a password")
+		lines = append(lines, "warning: no API secret - the dashboard/API is unprotected (run `mihoro secret reset`)")
 	}
+	return lines
 }
 
 // --- discovery ---

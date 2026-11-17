@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
 	"mihoro-go/internal/config"
 	"mihoro-go/internal/utils"
@@ -107,15 +108,42 @@ func BuildDownloadURL(version, arch string, channel config.MihomoChannel) string
 	}
 }
 
-// FetchLatestVersion fetches the latest mihomo version for the given channel from GitHub.
-func FetchLatestVersion(ctx context.Context, client *http.Client, channel config.MihomoChannel, userAgent string) (string, error) {
+// FetchLatestVersion fetches the latest mihomo version for the given channel
+// from GitHub. When a mirror is configured it is tried first, with the direct
+// URL as a fallback so a dead mirror does not block updates.
+func FetchLatestVersion(ctx context.Context, client *http.Client, channel config.MihomoChannel,
+	userAgent string) (string, error) {
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+
 	url := stableVersionURL
 	if channel == config.ChannelAlpha {
 		url = alphaVersionURL
 	}
 
-	resolvedURL := utils.ResolveDownloadURL(url)
-	req, err := http.NewRequestWithContext(ctx, "GET", resolvedURL, nil)
+	urls := []string{utils.ResolveDownloadURL(url)}
+	if urls[0] != url {
+		urls = append(urls, url)
+	}
+
+	var lastErr error
+	for _, u := range urls {
+		version, err := fetchVersionFrom(ctx, client, u, userAgent)
+		if err == nil {
+			return version, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+// fetchVersionFrom downloads a version.txt from a single URL.
+func fetchVersionFrom(ctx context.Context, client *http.Client, url, userAgent string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", fmt.Errorf("create version request: %w", err)
 	}
@@ -123,12 +151,12 @@ func FetchLatestVersion(ctx context.Context, client *http.Client, channel config
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch version from %s: %w", resolvedURL, err)
+		return "", fmt.Errorf("fetch version from %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("fetch version: HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("fetch version from %s: HTTP %d", url, resp.StatusCode)
 	}
 
 	// Read body — version.txt is small (< 100 bytes)

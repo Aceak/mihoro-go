@@ -18,6 +18,7 @@ type Config struct {
 	MihomoConfigRoot      string        `toml:"mihomo_config_root"`
 	MihomoConfig          MihomoConfig  `toml:"mihomo_config"`
 	GitHubMirror          string        `toml:"github_mirror,omitempty"`
+	Proxy                 string        `toml:"proxy,omitempty"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -50,19 +51,35 @@ func Load(path string) (*Config, error) {
 }
 
 // Save writes the Config to path as TOML, creating parent directories if needed.
+// The file is written atomically with mode 0600 because it may contain the
+// API secret. An existing symlink is followed so the link itself is preserved.
 func (c *Config) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
+
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	f, err := os.Create(path)
+	f, err := os.CreateTemp(filepath.Dir(target), ".config-*.toml")
 	if err != nil {
-		return fmt.Errorf("create config file %s: %w", path, err)
+		return fmt.Errorf("create temp config: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	tmpName := f.Name()
+	defer func() { _ = os.Remove(tmpName) }()
 
 	if err := toml.NewEncoder(f).Encode(c); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("encode config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("rename config: %w", err)
 	}
 	return nil
 }

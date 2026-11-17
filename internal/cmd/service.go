@@ -11,6 +11,7 @@ import (
 	"mihoro-go/internal/systemctl"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var startCmd = &cobra.Command{
@@ -126,6 +127,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	uiPresent := checkUIPresent(m.ConfigRoot, m.Config.MihomoConfig.ExternalUI)
 	fmt.Printf("  %-12s %s\n", "UI:", uiPresent)
 
+	// Report the state from config.yaml: that is what mihomo actually reads.
+	secretState := "not set - run `mihoro secret reset` to set one"
+	if yamlSecretSet(m.MihomoCfg) {
+		secretState = "set"
+	}
+	fmt.Printf("  %-12s %s\n", "Secret:", secretState)
+
 	if active {
 		fmt.Printf("  %-12s %sactive%s\n", "Service:", colorGreen, colorReset)
 	} else {
@@ -187,6 +195,20 @@ func runCoreStatus() error {
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
 	return nil
+}
+
+// yamlSecretSet reports whether the mihomo config.yaml carries a non-empty
+// secret. The value itself is never returned or printed.
+func yamlSecretSet(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var yml config.MihomoYamlConfig
+	if err := yaml.Unmarshal(data, &yml); err != nil {
+		return false
+	}
+	return yml.Secret != nil && *yml.Secret != ""
 }
 
 func checkGeodataPresent(configRoot string) string {

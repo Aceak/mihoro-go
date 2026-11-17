@@ -15,6 +15,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Normalize the mirror: strip quotes and trailing slashes, require http(s).
+if [ -n "${MIRROR}" ]; then
+    MIRROR=$(printf '%s' "${MIRROR}" | tr -d \'\" | sed 's:/*$::')
+    case "${MIRROR}" in
+        http://*|https://*) ;;
+        *) echo "--mirror must start with http:// or https:// (e.g. --mirror https://ghfast.top)" >&2; exit 1 ;;
+    esac
+fi
+
 # Detect arch
 case "$(uname -m)" in
     x86_64|amd64)  ARCH=amd64 ;;

@@ -72,24 +72,22 @@ func RunUpgrade(ctx context.Context, client *http.Client) error {
 
 	fmt.Printf("mihoro: Downloading %s for %s...\n", latest.TagName, target)
 
-	downloadURL := utils.ResolveDownloadURL(assetURL)
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
-	if err != nil {
-		return fmt.Errorf("create download request: %w", err)
+	urls := []string{utils.ResolveDownloadURL(assetURL)}
+	if urls[0] != assetURL {
+		urls = append(urls, assetURL)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("download release: %w", err)
+	var binData []byte
+	var lastErr error
+	for _, downloadURL := range urls {
+		data, err := downloadRelease(ctx, client, downloadURL)
+		if err == nil {
+			binData = data
+			break
+		}
+		lastErr = err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("download release: HTTP %d", resp.StatusCode)
-	}
-
-	binData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read release: %w", err)
+	if binData == nil {
+		return fmt.Errorf("download release: %w", lastErr)
 	}
 
 	if err := selfupdate.Apply(bytes.NewReader(binData), selfupdate.Options{}); err != nil {
@@ -101,6 +99,32 @@ func RunUpgrade(ctx context.Context, client *http.Client) error {
 
 	fmt.Printf("mihoro: Updated to %s\n", latest.TagName)
 	return nil
+}
+
+// downloadRelease fetches the release binary from a single URL.
+func downloadRelease(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create download request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download release from %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download release from %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read release: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("download release from %s: empty response", url)
+	}
+	return data, nil
 }
 
 // --- internal helpers ---

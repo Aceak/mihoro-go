@@ -107,6 +107,16 @@ func (r *StageReport) StageFailed(name string) bool {
 	return false
 }
 
+// HasInstalledAny reports whether at least one stage installed something.
+func (r *StageReport) HasInstalledAny() bool {
+	for _, e := range r.entries {
+		if e.Status == StageInstalled {
+			return true
+		}
+	}
+	return false
+}
+
 // HasInstalled returns true if the named stage completed successfully.
 func (r *StageReport) HasInstalled(name string) bool {
 	for _, e := range r.entries {

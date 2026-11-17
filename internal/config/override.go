@@ -21,6 +21,11 @@ func ApplyOverride(yamlPath string, override *MihomoConfig) (bool, error) {
 		return false, fmt.Errorf("read yaml %s: %w", yamlPath, err)
 	}
 
+	// Tighten permissions even when the content is unchanged below.
+	if err := chmodPrivate(yamlPath); err != nil {
+		return false, err
+	}
+
 	var yml MihomoYamlConfig
 	if err := yaml.Unmarshal(raw, &yml); err != nil {
 		return false, fmt.Errorf("parse yaml %s: %w", yamlPath, err)
@@ -66,10 +71,19 @@ func ApplyOverride(yamlPath string, override *MihomoConfig) (bool, error) {
 		return false, nil
 	}
 
-	if err := os.WriteFile(yamlPath, serialized, 0644); err != nil {
+	if err := os.WriteFile(yamlPath, serialized, 0600); err != nil {
 		return false, fmt.Errorf("write yaml %s: %w", yamlPath, err)
 	}
 	return true, nil
+}
+
+// chmodPrivate restricts path to owner-only access (0600). It is used for
+// files that may contain the API secret or proxy credentials.
+func chmodPrivate(path string) error {
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
 }
 
 func ptrIntIfNotNil(p *uint16) *int {
@@ -123,6 +137,14 @@ func ApplyOverrideTo(srcPath, dstPath string, override *MihomoConfig) (bool, err
 		return false, fmt.Errorf("create dir: %w", err)
 	}
 
+	// Tighten permissions on an existing destination even when the content
+	// is unchanged below.
+	if _, err := os.Stat(dstPath); err == nil {
+		if err := chmodPrivate(dstPath); err != nil {
+			return false, err
+		}
+	}
+
 	// Check if dst already matches
 	if existing, err := os.ReadFile(dstPath); err == nil {
 		var origNode yaml.Node
@@ -136,7 +158,7 @@ func ApplyOverrideTo(srcPath, dstPath string, override *MihomoConfig) (bool, err
 		}
 	}
 
-	if err := os.WriteFile(dstPath, serialized, 0644); err != nil {
+	if err := os.WriteFile(dstPath, serialized, 0600); err != nil {
 		return false, fmt.Errorf("write %s: %w", dstPath, err)
 	}
 	return true, nil
